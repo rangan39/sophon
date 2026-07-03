@@ -1,0 +1,12 @@
+.next/
+node_modules/
+.npm-cache/
+
+*.log
+.env
+.env.*
+!.env.example
+
+dist/
+coverage/
+.DS_Store
