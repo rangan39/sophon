@@ -12,3 +12,7 @@ coverage/
 .DS_Store
 .vercel
 .env*
+
+__pycache__/
+*.py[cod]
+*.egg-info/

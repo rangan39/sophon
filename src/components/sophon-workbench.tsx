@@ -16,14 +16,9 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import * as THREE from "three";
-import {
-  LayerState,
-  MetricMode,
-  PromptKind,
-  PromptRun,
-  metricValue,
-  promptRuns
-} from "@/lib/sample-data";
+import { MAX_PROMPT_CHARS, MAX_PROMPT_TOKENS, runPrompt } from "@/lib/interp-client";
+import { LayerState, MetricMode, PromptRun, metricValue } from "@/lib/prompt-run";
+import { PromptKind, promptRuns } from "@/lib/sample-data";
 
 type Selection = {
   layer: number;
@@ -242,7 +237,7 @@ function PromptButton({
         <span className="help-anchor" aria-label={`${run.title} help`}>
           <CircleHelp size={15} aria-hidden="true" />
           <span className="tooltip" role="tooltip">
-            {promptHelp[run.id]}
+            {promptHelp[run.id as PromptKind]}
           </span>
         </span>
       </span>
@@ -252,25 +247,67 @@ function PromptButton({
 }
 
 export function SophonWorkbench() {
-  const [promptKind, setPromptKind] = useState<PromptKind>("factual");
+  const [promptKind, setPromptKind] = useState<PromptKind | "live">("factual");
+  const [currentRun, setCurrentRun] = useState<PromptRun>(promptRuns[0]);
+  const [promptInput, setPromptInput] = useState(promptRuns[0].prompt);
   const [metric, setMetric] = useState<MetricMode>("residual");
   const [showAttention, setShowAttention] = useState(true);
   const [selectedHead, setSelectedHead] = useState<number | "all">("all");
   const [selection, setSelection] = useState<Selection>({ layer: 8, token: 3 });
+  const [isRunning, setIsRunning] = useState(false);
+  const [runMessage, setRunMessage] = useState<string | null>(null);
 
-  const run = useMemo(() => promptRuns.find((item) => item.id === promptKind) ?? promptRuns[0], [promptKind]);
+  const run = currentRun;
   const selectedLayer = run.layers[Math.min(selection.layer, run.layers.length - 1)];
   const selectedToken = run.tokens[Math.min(selection.token, run.tokens.length - 1)];
-  const feature = selectedLayer.topFeature[selectedToken.index];
+  const feature = selectedLayer.topFeature[selectedToken.index] ?? {
+    id: "n/a",
+    activation: 0,
+    label: "SAE unavailable"
+  };
   const value = metricValue(selectedLayer, selectedToken.index, metric);
+  const promptCharsRemaining = MAX_PROMPT_CHARS - promptInput.length;
+  const canRun = promptInput.trim().length > 0 && !isRunning;
+  const statusLabel = useMemo(() => {
+    if (run.source === "transformer-lens") return "Live TransformerLens run";
+    return "Generated demo data";
+  }, [run.source]);
 
   function choosePrompt(next: PromptKind) {
     const nextRun = promptRuns.find((item) => item.id === next) ?? promptRuns[0];
     setPromptKind(next);
+    setCurrentRun(nextRun);
+    setPromptInput(nextRun.prompt);
+    setRunMessage(null);
     setSelection({
       layer: Math.min(8, nextRun.layers.length - 1),
       token: Math.max(0, nextRun.tokens.length - 1)
     });
+  }
+
+  async function executeRun() {
+    if (!canRun) return;
+
+    setIsRunning(true);
+    setRunMessage(null);
+
+    const result = await runPrompt(promptInput.trim());
+
+    if (result.ok) {
+      setPromptKind("live");
+      setCurrentRun(result.run);
+      setSelectedHead("all");
+      setSelection({
+        layer: Math.min(8, result.run.layers.length - 1),
+        token: Math.max(0, result.run.tokens.length - 1)
+      });
+    } else if (result.code === "PROMPT_TOO_LONG" && result.tokenCount && result.maxTokens) {
+      setRunMessage(`This prompt is ${result.tokenCount} tokens. Keep it under ${result.maxTokens} tokens.`);
+    } else {
+      setRunMessage(result.message);
+    }
+
+    setIsRunning(false);
   }
 
   return (
@@ -291,9 +328,36 @@ export function SophonWorkbench() {
           </div>
           <div className="prompt-list">
             {promptRuns.map((item) => (
-              <PromptButton key={item.id} run={item} active={item.id === run.id} onClick={() => choosePrompt(item.id)} />
+              <PromptButton
+                key={item.id}
+                run={item}
+                active={promptKind !== "live" && item.id === run.id}
+                onClick={() => choosePrompt(item.id as PromptKind)}
+              />
             ))}
           </div>
+        </section>
+
+        <section className="panel">
+          <div className="panel-heading">
+            <Braces size={16} />
+            <h2>Run Prompt</h2>
+          </div>
+          <textarea
+            className="prompt-input"
+            maxLength={MAX_PROMPT_CHARS}
+            onChange={(event) => setPromptInput(event.target.value)}
+            value={promptInput}
+          />
+          <div className="prompt-input-meta">
+            <span>{promptCharsRemaining} chars left</span>
+            <span>{MAX_PROMPT_TOKENS} token backend cap</span>
+          </div>
+          {runMessage ? <p className="run-message">{runMessage}</p> : null}
+          <button className="run-button full-width" disabled={!canRun} onClick={executeRun} type="button">
+            <Play size={16} />
+            <span>{isRunning ? "Running" : "Run real model"}</span>
+          </button>
         </section>
 
         <section className="panel">
@@ -332,14 +396,15 @@ export function SophonWorkbench() {
           <div>
             <p className="eyebrow">{run.model}</p>
             <h2>{run.title}</h2>
+            <p className="run-source">{statusLabel}</p>
           </div>
           <div className="top-actions">
             <button type="button" className="icon-button" onClick={() => setSelection({ layer: 0, token: 0 })} title="Reset selection">
               <RotateCcw size={18} />
             </button>
-            <button type="button" className="run-button">
+            <button type="button" className="run-button" disabled={!canRun} onClick={executeRun}>
               <Play size={16} />
-              <span>Demo run</span>
+              <span>{isRunning ? "Running" : "Run"}</span>
             </button>
           </div>
         </header>
