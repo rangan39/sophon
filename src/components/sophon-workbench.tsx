@@ -6,6 +6,7 @@ import {
   Activity,
   Braces,
   BrainCircuit,
+  CircleHelp,
   Eye,
   Layers3,
   Network,
@@ -39,6 +40,14 @@ const metricColors: Record<MetricMode, { low: string; high: string }> = {
   residual: { low: "#2b3440", high: "#4dd7ff" },
   attribution: { low: "#332b3f", high: "#ff6fb1" },
   logit: { low: "#343021", high: "#ffcc4d" }
+};
+
+const promptHelp: Record<PromptKind, string> = {
+  factual: "Shows how a model retrieves a known association, such as France leading toward Paris.",
+  induction: "Shows repeated-pattern completion, the classic setup for studying induction heads.",
+  code: "Shows syntax and structure tracking across code tokens like def, return, and punctuation.",
+  ambiguity: "Shows how surrounding context can resolve a token with multiple possible meanings.",
+  safety: "Shows instruction-boundary framing and how refusal-like context can become salient."
 };
 
 function lerpColor(low: string, high: string, value: number) {
@@ -228,7 +237,15 @@ function PromptButton({
 }) {
   return (
     <button className={active ? "prompt-button active" : "prompt-button"} type="button" onClick={onClick}>
-      <span className="prompt-title">{run.title}</span>
+      <span className="prompt-title-row">
+        <span className="prompt-title">{run.title}</span>
+        <span className="help-anchor" aria-label={`${run.title} help`}>
+          <CircleHelp size={15} aria-hidden="true" />
+          <span className="tooltip" role="tooltip">
+            {promptHelp[run.id]}
+          </span>
+        </span>
+      </span>
       <span className="prompt-text">{run.prompt}</span>
     </button>
   );

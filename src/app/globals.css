@@ -157,6 +157,78 @@ button {
   font-weight: 700;
 }
 
+.prompt-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.help-anchor {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  color: var(--muted);
+}
+
+.help-anchor svg {
+  pointer-events: none;
+}
+
+.prompt-button:hover .help-anchor,
+.prompt-button:focus-visible .help-anchor {
+  color: var(--cyan);
+}
+
+.tooltip {
+  position: absolute;
+  right: -6px;
+  bottom: calc(100% + 8px);
+  z-index: 5;
+  width: min(230px, calc(100vw - 48px));
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #24211d;
+  box-shadow: 0 14px 40px rgb(0 0 0 / 34%);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.35;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease;
+  white-space: normal;
+}
+
+.tooltip::after {
+  position: absolute;
+  right: 11px;
+  bottom: -5px;
+  width: 9px;
+  height: 9px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: #24211d;
+  content: "";
+  transform: rotate(45deg);
+}
+
+.prompt-button:hover .tooltip,
+.prompt-button:focus-visible .tooltip {
+  opacity: 1;
+  transform: translateY(0);
+}
+
 .prompt-text {
   overflow: hidden;
   font-size: 12px;
