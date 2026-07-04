@@ -27,7 +27,8 @@ body {
 }
 
 button,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -290,7 +291,7 @@ button {
 
 .stage {
   display: grid;
-  grid-template-rows: 76px minmax(0, 1fr) 74px;
+  grid-template-rows: 92px minmax(0, 1fr) 74px;
   min-width: 0;
   background: #11100f;
 }
@@ -317,6 +318,12 @@ button {
   white-space: nowrap;
 }
 
+.run-source {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .top-actions {
   display: flex;
   gap: 8px;
@@ -331,6 +338,54 @@ button {
 .run-button {
   height: 38px;
   padding: 0 13px;
+}
+
+.run-button:disabled,
+.icon-button:disabled,
+.segmented:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.run-button.full-width {
+  width: 100%;
+  margin-top: 12px;
+}
+
+.prompt-input {
+  width: 100%;
+  min-height: 98px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #11100f;
+  color: var(--text);
+  padding: 10px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.prompt-input:focus {
+  border-color: var(--cyan);
+  outline: 0;
+}
+
+.prompt-input-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.run-message {
+  margin: 10px 0 0;
+  border-left: 3px solid var(--gold);
+  padding-left: 9px;
+  color: #ffe2a3;
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .scene-wrap {
@@ -481,7 +536,7 @@ button {
   }
 
   .stage {
-    grid-template-rows: 68px minmax(0, 1fr) 66px;
+    grid-template-rows: 82px minmax(0, 1fr) 66px;
   }
 
   .topbar h2 {

@@ -1,49 +1,11 @@
+import { AttentionEdge, LayerState, PromptRun, Token, metricValue as baseMetricValue } from "@/lib/prompt-run";
+
 export type PromptKind =
   | "factual"
   | "induction"
   | "code"
   | "ambiguity"
   | "safety";
-
-export type Token = {
-  index: number;
-  text: string;
-};
-
-export type AttentionEdge = {
-  from: number;
-  to: number;
-  weight: number;
-  head: number;
-};
-
-export type LayerState = {
-  layer: number;
-  residualNorm: number[];
-  attribution: number[];
-  logitConfidence: number[];
-  topFeature: {
-    id: string;
-    activation: number;
-    label: string;
-  }[];
-  attention: AttentionEdge[];
-};
-
-export type PromptRun = {
-  id: PromptKind;
-  title: string;
-  prompt: string;
-  model: string;
-  source: string;
-  expectedNextToken: string;
-  tokens: Token[];
-  layers: LayerState[];
-  finalPredictions: {
-    token: string;
-    probability: number;
-  }[];
-};
 
 const featureLabels = [
   "country-capital relation",
@@ -136,7 +98,12 @@ function buildLayers(kind: PromptKind, tokenCount: number): LayerState[] {
   });
 }
 
-const promptDefs: Array<Omit<PromptRun, "tokens" | "layers"> & { prompt: string }> = [
+type DemoPromptDef = Omit<PromptRun, "id" | "tokens" | "layers"> & {
+  id: PromptKind;
+  prompt: string;
+};
+
+const promptDefs: DemoPromptDef[] = [
   {
     id: "factual",
     title: "Factual Recall",
@@ -217,10 +184,4 @@ export const promptRuns: PromptRun[] = promptDefs.map((prompt) => {
   };
 });
 
-export function metricValue(layer: LayerState, tokenIndex: number, metric: MetricMode) {
-  if (metric === "attribution") return layer.attribution[tokenIndex] ?? 0;
-  if (metric === "logit") return layer.logitConfidence[tokenIndex] ?? 0;
-  return layer.residualNorm[tokenIndex] ?? 0;
-}
-
-export type MetricMode = "residual" | "attribution" | "logit";
+export const metricValue = baseMetricValue;

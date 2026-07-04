@@ -1,0 +1,153 @@
+from __future__ import annotations
+
+from functools import lru_cache
+
+import torch
+from transformer_lens import HookedTransformer
+
+from sophon_interp.schemas import AttentionEdge, Feature, LayerState, Prediction, PromptRun, RunRequest, Token
+
+ALLOWED_MODELS = {"gpt2-small"}
+
+
+class PromptTooLongError(ValueError):
+    def __init__(self, token_count: int, max_tokens: int):
+        super().__init__("Prompt exceeds the token cap.")
+        self.token_count = token_count
+        self.max_tokens = max_tokens
+
+
+@lru_cache(maxsize=1)
+def get_model(model_name: str) -> HookedTransformer:
+    if model_name not in ALLOWED_MODELS:
+        raise ValueError(f"Unsupported model: {model_name}")
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = HookedTransformer.from_pretrained(model_name, device=device)
+    model.eval()
+    return model
+
+
+def normalize(values: torch.Tensor) -> list[float]:
+    values = values.detach().float().cpu()
+    min_value = values.min()
+    max_value = values.max()
+    span = max_value - min_value
+    if span.abs().item() < 1e-8:
+        return [0.0 for _ in values.reshape(-1)]
+    scaled = (values - min_value) / span
+    return [round(float(item), 6) for item in scaled.reshape(-1)]
+
+
+def positive_normalize(values: torch.Tensor) -> list[float]:
+    values = values.detach().float().cpu().clamp_min(0)
+    max_value = values.max()
+    if max_value.item() < 1e-8:
+        return [0.0 for _ in values.reshape(-1)]
+    scaled = values / max_value
+    return [round(float(item), 6) for item in scaled.reshape(-1)]
+
+
+def top_predictions(model: HookedTransformer, logits: torch.Tensor, top_k: int) -> list[Prediction]:
+    probs = logits[0, -1].softmax(dim=-1)
+    values, indices = probs.topk(top_k)
+    return [
+        Prediction(token=model.to_string(int(token_id)), probability=round(float(prob), 6))
+        for prob, token_id in zip(values.detach().cpu(), indices.detach().cpu(), strict=True)
+    ]
+
+
+def attention_edges(pattern: torch.Tensor, layer: int, top_k: int) -> list[AttentionEdge]:
+    # pattern shape: [batch, head, destination token, source token]
+    layer_pattern = pattern[0].detach().float().cpu()
+    head_count, dest_count, source_count = layer_pattern.shape
+    edges: list[AttentionEdge] = []
+
+    for head in range(head_count):
+        weights = layer_pattern[head].clone()
+        weights.fill_diagonal_(0)
+        flat_values, flat_indices = weights.reshape(-1).topk(min(top_k, dest_count * source_count))
+        for weight, flat_index in zip(flat_values, flat_indices, strict=True):
+            if weight <= 0:
+                continue
+            destination = int(flat_index // source_count)
+            source = int(flat_index % source_count)
+            edges.append(
+                AttentionEdge(
+                    from_=destination,
+                    to=source,
+                    head=head,
+                    weight=round(float(weight), 6),
+                )
+            )
+
+    edges.sort(key=lambda edge: edge.weight, reverse=True)
+    return edges[:top_k]
+
+
+def logit_lens_confidence(model: HookedTransformer, residual: torch.Tensor) -> list[float]:
+    with torch.no_grad():
+        normalized = model.ln_final(residual.unsqueeze(0))[0]
+        logits = model.unembed(normalized)
+        confidence = logits.softmax(dim=-1).max(dim=-1).values
+    return positive_normalize(confidence)
+
+
+def direct_logit_attribution(model: HookedTransformer, residual: torch.Tensor, target_token_id: int) -> list[float]:
+    direction = model.W_U[:, target_token_id]
+    attribution = residual @ direction
+    return normalize(attribution)
+
+
+def extract_prompt_run(request: RunRequest) -> PromptRun:
+    model = get_model(request.model)
+
+    with torch.no_grad():
+        tokens_tensor = model.to_tokens(request.prompt, prepend_bos=True)
+        token_ids = tokens_tensor[0].detach().cpu().tolist()
+        if len(token_ids) > request.maxTokens:
+            raise PromptTooLongError(len(token_ids), request.maxTokens)
+
+        string_tokens = model.to_str_tokens(tokens_tensor[0])
+        logits, cache = model.run_with_cache(tokens_tensor)
+        predictions = top_predictions(model, logits, request.topKPredictions)
+        target_token_id = int(logits[0, -1].argmax(dim=-1).item())
+
+        tokens = [
+            Token(index=index, id=int(token_id), text=text)
+            for index, (token_id, text) in enumerate(zip(token_ids, string_tokens, strict=True))
+        ]
+
+        layers: list[LayerState] = []
+        for layer_index in range(model.cfg.n_layers):
+            residual = cache["resid_post", layer_index][0]
+            residual_norm = positive_normalize(residual.norm(dim=-1))
+            logit_confidence = logit_lens_confidence(model, residual)
+            attribution = direct_logit_attribution(model, residual, target_token_id)
+            pattern = cache["pattern", layer_index]
+
+            layers.append(
+                LayerState(
+                    layer=layer_index,
+                    residualNorm=residual_norm,
+                    attribution=attribution,
+                    logitConfidence=logit_confidence,
+                    attention=attention_edges(pattern, layer_index, request.topKAttentionEdges),
+                    topFeature=[
+                        Feature(id=f"sae-unavailable-{layer_index}-{token.index}", activation=0, label="SAE unavailable")
+                        for token in tokens
+                    ],
+                )
+            )
+
+    return PromptRun(
+        id="live",
+        title="Live Prompt",
+        prompt=request.prompt,
+        model=f"{request.model} / TransformerLens",
+        source="transformer-lens",
+        expectedNextToken=predictions[0].token if predictions else None,
+        tokens=tokens,
+        layers=layers,
+        finalPredictions=predictions,
+    )

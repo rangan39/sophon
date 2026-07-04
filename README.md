@@ -15,9 +15,11 @@ The current MVP is a Next.js + React Three Fiber app that shows how transformer 
 
 ## Important Note
 
-This MVP uses generated demo data.
+This MVP ships with generated demo data by default.
 
-It does not currently run a real transformer model or compute real activations. The data shape is designed to resemble normalized outputs from tools like Neuronpedia, TransformerLens, or SAELens so the frontend can later be connected to real model internals.
+The app now also includes a Modal + FastAPI + TransformerLens service scaffold in `services/interp-api/` for live `gpt2-small` runs. When `INTERP_API_URL` is not configured, the frontend stays on the generated demo data. When it is configured, the prompt runner calls the backend and renders real tokenization, residual summaries, logit-lens confidence, and top-k attention arcs.
+
+SAE feature labels are still placeholders in the live path. Real SAE integration is a later step.
 
 ## Tech Stack
 
@@ -66,6 +68,43 @@ src/components/
 
 src/lib/
   Demo prompt data and shared types
+
+services/interp-api/
+  Modal-hosted TransformerLens API scaffold
+```
+
+## Live TransformerLens Backend
+
+The frontend caps prompt input at 280 characters. The backend is still authoritative and rejects prompts over 64 model tokens.
+
+Local backend development:
+
+```bash
+cd services/interp-api
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
+uvicorn sophon_interp.api:create_app --factory --reload
+```
+
+Modal development:
+
+```bash
+cd services/interp-api
+modal serve modal_app.py
+```
+
+Deploy:
+
+```bash
+modal deploy services/interp-api/modal_app.py
+```
+
+Frontend environment:
+
+```txt
+INTERP_API_URL=https://your-modal-app.modal.run
+INTERP_API_TOKEN=optional-shared-token
 ```
 
 ## Mechanistic Interpretability Concepts
