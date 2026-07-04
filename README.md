@@ -7,7 +7,7 @@ The current MVP is a Next.js + React Three Fiber app that shows how transformer 
 ## What It Shows
 
 - A 3D layer-by-token grid for transformer-style activations
-- Prompt presets for factual recall, induction, code, ambiguity, and instruction boundaries
+- Prompt input backed by a TransformerLens service
 - Metric modes for residual signal, attribution, and logit-lens confidence
 - Attention-style arcs between tokens
 - A side inspector for selected token/layer details
@@ -15,9 +15,9 @@ The current MVP is a Next.js + React Three Fiber app that shows how transformer 
 
 ## Important Note
 
-This MVP ships with generated demo data by default.
+This MVP requires real run data from the TransformerLens API path.
 
-The app now also includes a Modal + FastAPI + TransformerLens service scaffold in `services/interp-api/` for live `gpt2-small` runs. When `INTERP_API_URL` is not configured, the frontend stays on the generated demo data. When it is configured, the prompt runner calls the backend and renders real tokenization, residual summaries, logit-lens confidence, and top-k attention arcs.
+The app includes a Modal + FastAPI + TransformerLens service scaffold in `services/interp-api/` for live `gpt2-small` runs. The prompt runner calls the backend and renders real tokenization, residual summaries, logit-lens confidence, and top-k attention arcs.
 
 SAE feature labels are still placeholders in the live path. Real SAE integration is a later step.
 
@@ -67,7 +67,7 @@ src/components/
   Sophon workbench and 3D visualization UI
 
 src/lib/
-  Demo prompt data and shared types
+  Shared prompt-run types and frontend API client
 
 services/interp-api/
   Modal-hosted TransformerLens API scaffold
