@@ -377,7 +377,7 @@ export function SophonWorkbench() {
 
   return (
     <main className="grid h-svh grid-cols-[380px_minmax(0,1fr)] overflow-hidden bg-background text-foreground max-[900px]:grid-cols-1 max-[900px]:grid-rows-[minmax(320px,42vh)_minmax(0,1fr)]">
-      <aside className="min-w-0 border-r bg-card/45 max-[900px]:border-b max-[900px]:border-r-0">
+      <aside className="min-h-0 min-w-0 overflow-hidden border-r bg-card/45 max-[900px]:border-b max-[900px]:border-r-0">
         <ScrollArea className="h-full">
           <div className="flex flex-col gap-4 p-4">
             <div className="flex min-h-12 items-center gap-3">
@@ -552,7 +552,7 @@ export function SophonWorkbench() {
         </ScrollArea>
       </aside>
 
-      <section className="grid min-w-0 grid-rows-[82px_minmax(0,1fr)_auto_74px] bg-background max-[760px]:grid-rows-[76px_minmax(0,1fr)_auto_66px]">
+      <section className="grid min-h-0 min-w-0 grid-rows-[82px_minmax(0,1fr)_auto_74px] bg-background max-[760px]:grid-rows-[76px_minmax(0,1fr)_auto_66px]">
         <header className="flex items-center justify-between gap-4 border-b px-5 py-4">
           <div className="min-w-0">
             <p className="mb-1 text-xs uppercase text-muted-foreground">{run?.model ?? "gpt2-small / TransformerLens"}</p>
