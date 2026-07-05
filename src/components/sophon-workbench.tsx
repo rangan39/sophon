@@ -117,12 +117,14 @@ function AttentionArcs({
         const [fromX, layerZ] = getCellPosition(layer.layer, edge.from, run.tokens.length, run.layers.length);
         const [toX] = getCellPosition(layer.layer, edge.to, run.tokens.length, run.layers.length);
         const midX = (fromX + toX) / 2;
-        const lift = 0.7 + Math.abs(fromX - toX) * 0.14 + edge.weight * 0.7;
-        const points: [number, number, number][] = [
-          [fromX, 0.95, layerZ],
-          [midX, 0.95 + lift, layerZ],
-          [toX, 0.95, layerZ]
-        ];
+        const lift = 1.05 + Math.abs(fromX - toX) * 0.18 + edge.weight * 0.85;
+        const curve = new THREE.QuadraticBezierCurve3(
+          new THREE.Vector3(fromX, 0.95, layerZ),
+          new THREE.Vector3(midX, 0.95 + lift, layerZ),
+          new THREE.Vector3(toX, 0.95, layerZ)
+        );
+        const points = curve.getPoints(36);
+
         return (
           <Line
             key={`${edge.from}-${edge.to}-${edge.head}-${index}`}
@@ -374,44 +376,17 @@ export function SophonWorkbench() {
   }
 
   return (
-    <main className="grid h-svh grid-cols-[300px_minmax(0,1fr)_340px] overflow-hidden bg-background text-foreground max-[1100px]:grid-cols-[260px_minmax(0,1fr)] max-[760px]:grid-cols-1 max-[760px]:grid-rows-[auto_minmax(0,1fr)]">
-      <aside className="min-w-0 border-r bg-card/45 max-[760px]:max-h-[38vh] max-[760px]:border-b max-[760px]:border-r-0">
+    <main className="grid h-svh grid-cols-[380px_minmax(0,1fr)] overflow-hidden bg-background text-foreground max-[900px]:grid-cols-1 max-[900px]:grid-rows-[minmax(320px,42vh)_minmax(0,1fr)]">
+      <aside className="min-w-0 border-r bg-card/45 max-[900px]:border-b max-[900px]:border-r-0">
         <ScrollArea className="h-full">
           <div className="flex flex-col gap-4 p-4">
-            <div className="flex min-h-14 items-center gap-3">
+            <div className="flex min-h-12 items-center gap-3">
               <BrainCircuit className="size-7 text-primary" />
               <div className="min-w-0">
                 <h1 className="text-2xl font-semibold tracking-normal">Sophon</h1>
                 <p className="text-xs text-muted-foreground">Mech-interp prompt workbench</p>
               </div>
             </div>
-
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="flex items-center gap-2 uppercase">
-                  <Braces className="size-4 text-primary" />
-                  Run Prompt
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <Textarea
-                  maxLength={MAX_PROMPT_CHARS}
-                  onChange={(event) => setPromptInput(event.target.value)}
-                  value={promptInput}
-                />
-                <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
-                  <span>{promptCharsRemaining} chars left</span>
-                  <Badge variant="secondary">{MAX_PROMPT_TOKENS} token cap</Badge>
-                </div>
-                {runMessage ? (
-                  <div className="border-l-2 border-primary pl-3 text-xs leading-5 text-primary">{runMessage}</div>
-                ) : null}
-                <Button className="w-full" disabled={!canRun} onClick={executeRun} type="button">
-                  <Play className="size-4" />
-                  <span>{isRunning ? "Running" : "Run real model"}</span>
-                </Button>
-              </CardContent>
-            </Card>
 
             <Card>
               <CardHeader className="pb-3">
@@ -471,78 +446,7 @@ export function SophonWorkbench() {
                 </div>
               </CardContent>
             </Card>
-          </div>
-        </ScrollArea>
-      </aside>
 
-      <section className="grid min-w-0 grid-rows-[92px_minmax(0,1fr)_74px] bg-background max-[760px]:grid-rows-[82px_minmax(0,1fr)_66px]">
-        <header className="flex items-center justify-between gap-4 border-b px-5 py-4">
-          <div className="min-w-0">
-            <p className="mb-1 text-xs uppercase text-muted-foreground">{run?.model ?? "gpt2-small / TransformerLens"}</p>
-            <h2 className="truncate text-2xl font-semibold max-[760px]:text-lg">{run?.title ?? "Run a prompt"}</h2>
-            <p className="mt-1 text-xs text-muted-foreground">{statusLabel}</p>
-          </div>
-          <div className="flex shrink-0 gap-2">
-            <Button
-              disabled={!run}
-              onClick={() => setSelection({ layer: 0, token: 0 })}
-              size="icon"
-              title="Reset selection"
-              type="button"
-              variant="outline"
-            >
-              <RotateCcw className="size-4" />
-            </Button>
-            <Button disabled={!canRun} onClick={executeRun} type="button">
-              <Play className="size-4" />
-              <span>{isRunning ? "Running" : "Run"}</span>
-            </Button>
-          </div>
-        </header>
-
-        <div className="min-h-0">
-          {run ? (
-            <LayerScene
-              run={run}
-              metric={metric}
-              selection={selection}
-              setSelection={setSelection}
-              showAttention={showAttention}
-              selectedHead={selectedHead}
-            />
-          ) : (
-            <div className="flex h-full flex-col items-center justify-center px-7 text-center text-muted-foreground">
-              <BrainCircuit className="size-11 text-primary" />
-              <h2 className="mt-4 text-xl font-semibold text-foreground">No model run loaded</h2>
-              <p className="mt-2 max-w-sm text-sm leading-6">
-                Enter a short prompt and run the local or hosted TransformerLens service.
-              </p>
-            </div>
-          )}
-        </div>
-
-        <footer className="flex items-center gap-2 overflow-x-auto border-t bg-card/45 px-5 py-3">
-          {run ? (
-            run.tokens.map((token) => (
-              <Button
-                className={cn("min-w-14 shrink-0", selection.token === token.index && "border-primary bg-primary/15 text-primary")}
-                key={token.index}
-                onClick={() => setSelection({ ...selection, token: token.index })}
-                type="button"
-                variant="outline"
-              >
-                {token.text.trim() || "space"}
-              </Button>
-            ))
-          ) : (
-            <span className="text-sm text-muted-foreground">Tokens appear after a real model run.</span>
-          )}
-        </footer>
-      </section>
-
-      <aside className="min-w-0 border-l bg-card/45 max-[1100px]:hidden">
-        <ScrollArea className="h-full">
-          <div className="flex flex-col gap-4 p-4">
             {run && selectedLayer && selectedToken && feature ? (
               <>
                 <Card>
@@ -647,6 +551,104 @@ export function SophonWorkbench() {
           </div>
         </ScrollArea>
       </aside>
+
+      <section className="grid min-w-0 grid-rows-[82px_minmax(0,1fr)_auto_74px] bg-background max-[760px]:grid-rows-[76px_minmax(0,1fr)_auto_66px]">
+        <header className="flex items-center justify-between gap-4 border-b px-5 py-4">
+          <div className="min-w-0">
+            <p className="mb-1 text-xs uppercase text-muted-foreground">{run?.model ?? "gpt2-small / TransformerLens"}</p>
+            <h2 className="truncate text-2xl font-semibold max-[760px]:text-lg">{run?.title ?? "Run a prompt"}</h2>
+            <p className="mt-1 text-xs text-muted-foreground">{statusLabel}</p>
+          </div>
+          <div className="flex shrink-0 gap-2">
+            <Button
+              disabled={!run}
+              onClick={() => setSelection({ layer: 0, token: 0 })}
+              size="icon"
+              title="Reset selection"
+              type="button"
+              variant="outline"
+            >
+              <RotateCcw className="size-4" />
+            </Button>
+            <Button disabled={!canRun} onClick={executeRun} type="button">
+              <Play className="size-4" />
+              <span>{isRunning ? "Running" : "Run"}</span>
+            </Button>
+          </div>
+        </header>
+
+        <div className="min-h-0">
+          {run ? (
+            <LayerScene
+              run={run}
+              metric={metric}
+              selection={selection}
+              setSelection={setSelection}
+              showAttention={showAttention}
+              selectedHead={selectedHead}
+            />
+          ) : (
+            <div className="flex h-full flex-col items-center justify-center px-7 text-center text-muted-foreground">
+              <BrainCircuit className="size-11 text-primary" />
+              <h2 className="mt-4 text-xl font-semibold text-foreground">No model run loaded</h2>
+              <p className="mt-2 max-w-sm text-sm leading-6">
+                Enter a short prompt and run the local or hosted TransformerLens service.
+              </p>
+            </div>
+          )}
+        </div>
+
+        <div className="border-t bg-background/95 px-5 py-3">
+          <div className="mx-auto w-full max-w-3xl rounded-2xl border bg-card/70 p-2 shadow-2xl shadow-black/20">
+            <div className="flex items-end gap-2">
+              <Textarea
+                className="min-h-12 resize-none border-0 bg-transparent px-3 py-3 shadow-none focus-visible:ring-0"
+                maxLength={MAX_PROMPT_CHARS}
+                onChange={(event) => setPromptInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    void executeRun();
+                  }
+                }}
+                placeholder="Run a prompt through the interpretability view"
+                rows={1}
+                value={promptInput}
+              />
+              <Button className="mb-1 size-10 shrink-0 rounded-full" disabled={!canRun} onClick={executeRun} size="icon" type="button">
+                <Play className="size-4" />
+              </Button>
+            </div>
+            <div className="flex items-center justify-between gap-3 px-3 pb-1 text-[11px] text-muted-foreground">
+              <span>{isRunning ? "Running TransformerLens" : "Enter to run, Shift+Enter for a new line"}</span>
+              <span>
+                {promptCharsRemaining} chars left · {MAX_PROMPT_TOKENS} token cap
+              </span>
+            </div>
+            {runMessage ? (
+              <div className="border-t px-3 py-2 text-xs leading-5 text-primary">{runMessage}</div>
+            ) : null}
+          </div>
+        </div>
+
+        <footer className="flex items-center gap-2 overflow-x-auto border-t bg-card/45 px-5 py-3">
+          {run ? (
+            run.tokens.map((token) => (
+              <Button
+                className={cn("min-w-14 shrink-0", selection.token === token.index && "border-primary bg-primary/15 text-primary")}
+                key={token.index}
+                onClick={() => setSelection({ ...selection, token: token.index })}
+                type="button"
+                variant="outline"
+              >
+                {token.text.trim() || "space"}
+              </Button>
+            ))
+          ) : (
+            <span className="text-sm text-muted-foreground">Tokens appear after a real model run.</span>
+          )}
+        </footer>
+      </section>
     </main>
   );
 }
