@@ -57,6 +57,46 @@ Build for production:
 npm run build
 ```
 
+## Docker Compose
+
+Docker Compose runs the Next.js frontend and the local TransformerLens API together.
+
+```bash
+docker compose up --build
+```
+
+If port `3000` is already in use:
+
+```bash
+FRONTEND_PORT=3001 docker compose up --build
+```
+
+Open:
+
+```txt
+http://localhost:3000
+```
+
+Check the backend:
+
+```bash
+curl http://localhost:8000/health
+curl http://localhost:8000/models
+```
+
+In this setup, the browser talks to Next.js at `localhost:3000`, and Next.js proxies `/api/runs` to `http://interp-api:8000` inside the Docker network. The first prompt run can be slow because the backend downloads and initializes `gpt2-small`. Hugging Face and Torch caches are stored in Docker volumes so model files are reused across runs.
+
+Local Compose defaults live in `.env.example`:
+
+```txt
+INTERP_API_URL=http://interp-api:8000
+INTERP_API_TOKEN=
+AUTH_TOKEN=
+ALLOWED_ORIGINS=http://localhost:3000
+FRONTEND_PORT=3000
+BACKEND_PORT=8000
+```
+
 ## Project Structure
 
 ```txt

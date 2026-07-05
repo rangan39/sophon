@@ -5,13 +5,13 @@ node_modules/
 *.log
 .env
 .env.*
-!.env.example
 
 dist/
 coverage/
 .DS_Store
 .vercel
 .env*
+!.env.example
 
 __pycache__/
 *.py[cod]
