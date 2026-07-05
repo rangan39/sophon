@@ -1,18 +1,21 @@
 "use client";
 
-import { Canvas } from "@react-three/fiber";
+import { Canvas, useThree } from "@react-three/fiber";
 import { Line, OrbitControls, Text } from "@react-three/drei";
 import {
   Activity,
   Braces,
   BrainCircuit,
+  ChevronDown,
+  ChevronUp,
   Eye,
   Network,
   Play,
   RotateCcw,
+  SlidersHorizontal,
   Sparkles
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import * as THREE from "three";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -277,7 +280,7 @@ function LayerScene({
   const selectedLayer = run.layers[selection.layer] ?? run.layers[0];
 
   return (
-    <Canvas camera={{ position: [0, 5.6, 8.4], fov: 48 }} dpr={[1, 2]}>
+    <Canvas camera={{ position: [0, 4.7, 7.1], fov: 42 }} dpr={[1, 2]}>
       <color attach="background" args={["#11100f"]} />
       <ambientLight intensity={0.5} />
       <directionalLight position={[4, -6, 8]} intensity={1.4} />
@@ -316,15 +319,41 @@ function LayerScene({
           );
         })}
       </group>
-      <OrbitControls
-        makeDefault
-        enableDamping
-        dampingFactor={0.08}
-        maxDistance={18}
-        minDistance={4}
-        target={[0, 0.45, 0]}
-      />
+      <SceneControls />
     </Canvas>
+  );
+}
+
+function SceneControls() {
+  const { camera, size } = useThree();
+  const isNarrow = size.width < 520;
+  const isCompact = size.width < 900;
+  const target = isNarrow ? [0.15, 0.48, 0] : [0, 0.52, 0];
+
+  useEffect(() => {
+    const perspective = camera as THREE.PerspectiveCamera;
+    if (isNarrow) {
+      perspective.position.set(0.1, 5.8, 9.6);
+      perspective.fov = 52;
+    } else if (isCompact) {
+      perspective.position.set(0.05, 5.2, 8.6);
+      perspective.fov = 48;
+    } else {
+      perspective.position.set(0, 4.7, 7.1);
+      perspective.fov = 42;
+    }
+    perspective.updateProjectionMatrix();
+  }, [camera, isCompact, isNarrow]);
+
+  return (
+    <OrbitControls
+      makeDefault
+      enableDamping
+      dampingFactor={0.08}
+      maxDistance={isNarrow ? 18 : 14}
+      minDistance={isNarrow ? 4 : 3.2}
+      target={target as [number, number, number]}
+    />
   );
 }
 
@@ -337,6 +366,7 @@ export function SophonWorkbench() {
   const [selection, setSelection] = useState<Selection>({ layer: 0, token: 0 });
   const [isRunning, setIsRunning] = useState(false);
   const [runMessage, setRunMessage] = useState<string | null>(null);
+  const [controlsOpen, setControlsOpen] = useState(false);
 
   const run = currentRun;
   const selectedLayer = run ? run.layers[Math.min(selection.layer, run.layers.length - 1)] : null;
@@ -375,189 +405,226 @@ export function SophonWorkbench() {
     setIsRunning(false);
   }
 
-  return (
-    <main className="grid h-svh grid-cols-[380px_minmax(0,1fr)] overflow-hidden bg-background text-foreground max-[900px]:grid-cols-1 max-[900px]:grid-rows-[minmax(320px,42vh)_minmax(0,1fr)]">
-      <aside className="min-h-0 min-w-0 overflow-hidden border-r bg-card/45 max-[900px]:border-b max-[900px]:border-r-0">
-        <ScrollArea className="h-full">
-          <div className="flex flex-col gap-4 p-4">
-            <div className="flex min-h-12 items-center gap-3">
-              <BrainCircuit className="size-7 text-primary" />
-              <div className="min-w-0">
-                <h1 className="text-2xl font-semibold tracking-normal">Sophon</h1>
-                <p className="text-xs text-muted-foreground">Mech-interp prompt workbench</p>
-              </div>
-            </div>
+  const controlPanel = (
+    <div className="flex flex-col gap-4 p-4">
+      <div className="flex min-h-12 items-center gap-3 max-[1024px]:hidden">
+        <BrainCircuit className="size-7 text-primary" />
+        <div className="min-w-0">
+          <h1 className="text-2xl font-semibold tracking-normal">Sophon</h1>
+          <p className="text-xs text-muted-foreground">Mech-interp prompt workbench</p>
+        </div>
+      </div>
 
-            <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="flex items-center gap-2 uppercase">
-                  <Sparkles className="size-4 text-primary" />
-                  Signal
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <ToggleGroup
-                  className="grid grid-cols-1"
-                  onValueChange={(nextMetric) => {
-                    if (nextMetric) setMetric(nextMetric as MetricMode);
-                  }}
-                  type="single"
-                  value={metric}
-                >
-                  <ToggleGroupItem className="justify-start" value="residual">
-                    <Activity className="size-4" />
-                    Residual
-                  </ToggleGroupItem>
-                  <ToggleGroupItem className="justify-start" value="attribution">
-                    <Network className="size-4" />
-                    Attribution
-                  </ToggleGroupItem>
-                  <ToggleGroupItem className="justify-start" value="logit">
-                    <Eye className="size-4" />
-                    Logit lens
-                  </ToggleGroupItem>
-                </ToggleGroup>
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 uppercase">
+            <Sparkles className="size-4 text-primary" />
+            Signal
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <ToggleGroup
+            className="grid grid-cols-1"
+            onValueChange={(nextMetric) => {
+              if (nextMetric) setMetric(nextMetric as MetricMode);
+            }}
+            type="single"
+            value={metric}
+          >
+            <ToggleGroupItem className="justify-start" value="residual">
+              <Activity className="size-4" />
+              Residual
+            </ToggleGroupItem>
+            <ToggleGroupItem className="justify-start" value="attribution">
+              <Network className="size-4" />
+              Attribution
+            </ToggleGroupItem>
+            <ToggleGroupItem className="justify-start" value="logit">
+              <Eye className="size-4" />
+              Logit lens
+            </ToggleGroupItem>
+          </ToggleGroup>
 
-                <div className="flex items-center justify-between gap-3">
-                  <Label htmlFor="attention-arcs" className="text-muted-foreground">
-                    Attention arcs
-                  </Label>
-                  <Switch id="attention-arcs" checked={showAttention} onCheckedChange={setShowAttention} />
-                </div>
-
-                <div className="flex items-center justify-between gap-3">
-                  <Label className="text-muted-foreground">Head</Label>
-                  <Select
-                    onValueChange={(value) => setSelectedHead(value === "all" ? "all" : Number(value))}
-                    value={String(selectedHead)}
-                  >
-                    <SelectTrigger className="w-24">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All</SelectItem>
-                      {Array.from({ length: 12 }, (_, index) => (
-                        <SelectItem value={String(index)} key={index}>
-                          H{index}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              </CardContent>
-            </Card>
-
-            {run && selectedLayer && selectedToken && feature ? (
-              <>
-                <Card>
-                  <CardHeader className="pb-3">
-                    <CardTitle className="flex items-center gap-2 uppercase">
-                      <Braces className="size-4 text-primary" />
-                      Prompt
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    <p className="text-base leading-7 text-foreground">{run.prompt}</p>
-                    <div className="grid gap-3">
-                      {run.finalPredictions.map((prediction) => (
-                        <div className="grid grid-cols-[74px_minmax(0,1fr)_42px] items-center gap-3 text-sm" key={prediction.token}>
-                          <span className="truncate">{prediction.token}</span>
-                          <Progress value={prediction.probability * 100} />
-                          <strong className="text-right text-xs">{Math.round(prediction.probability * 100)}%</strong>
-                        </div>
-                      ))}
-                    </div>
-                  </CardContent>
-                </Card>
-
-                <Card>
-                  <CardHeader className="pb-3">
-                    <CardTitle className="flex items-center gap-2 uppercase">
-                      <Eye className="size-4 text-primary" />
-                      Selection
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    <dl className="grid grid-cols-2 gap-3">
-                      <div className="min-w-0 rounded-md border bg-background/60 p-3">
-                        <dt className="mb-1 text-xs uppercase text-muted-foreground">Layer</dt>
-                        <dd className="truncate text-sm">{selectedLayer.layer}</dd>
-                      </div>
-                      <div className="min-w-0 rounded-md border bg-background/60 p-3">
-                        <dt className="mb-1 text-xs uppercase text-muted-foreground">Token</dt>
-                        <dd className="truncate text-sm">{selectedToken.text.trim() || "space"}</dd>
-                      </div>
-                      <div className="min-w-0 rounded-md border bg-background/60 p-3">
-                        <dt className="mb-1 text-xs uppercase text-muted-foreground">{metricLabels[metric]}</dt>
-                        <dd className="truncate text-sm">{value.toFixed(3)}</dd>
-                      </div>
-                      <div className="min-w-0 rounded-md border bg-background/60 p-3">
-                        <dt className="mb-1 text-xs uppercase text-muted-foreground">Feature</dt>
-                        <dd className="truncate text-sm">{feature.id}</dd>
-                      </div>
-                    </dl>
-                    <div className="border-l-2 border-primary pl-3">
-                      <span className="text-xs text-muted-foreground">Top SAE feature</span>
-                      <strong className="my-1 block text-sm">{feature.label}</strong>
-                      <p className="text-xs text-muted-foreground">Activation {feature.activation}</p>
-                    </div>
-                  </CardContent>
-                </Card>
-
-                <Card>
-                  <CardHeader className="pb-3">
-                    <CardTitle className="flex items-center gap-2 uppercase">
-                      <Network className="size-4 text-primary" />
-                      Selected Layer Heads
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="grid gap-2">
-                      {selectedLayer.attention.slice(0, 6).map((edge, index) => (
-                        <Button
-                          className={cn(
-                            "grid h-auto w-full grid-cols-[38px_minmax(0,1fr)_40px] justify-normal gap-2 px-3 py-2 text-left",
-                            selectedHead === edge.head && "border-primary bg-primary/15 text-primary"
-                          )}
-                          key={`${edge.head}-${edge.from}-${edge.to}-${index}`}
-                          onClick={() => setSelectedHead(edge.head)}
-                          type="button"
-                          variant="outline"
-                        >
-                          <span>H{edge.head}</span>
-                          <strong className="truncate text-xs font-semibold">
-                            {run.tokens[edge.from]?.text.trim() || "space"} {"->"} {run.tokens[edge.to]?.text.trim() || "space"}
-                          </strong>
-                          <em className="text-right text-xs not-italic text-primary">{edge.weight.toFixed(2)}</em>
-                        </Button>
-                      ))}
-                    </div>
-                  </CardContent>
-                </Card>
-              </>
-            ) : (
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="flex items-center gap-2 uppercase">
-                    <Eye className="size-4 text-primary" />
-                    Inspector
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-sm leading-6 text-muted-foreground">No TransformerLens run is loaded.</p>
-                </CardContent>
-              </Card>
-            )}
+          <div className="flex items-center justify-between gap-3">
+            <Label htmlFor="attention-arcs" className="text-muted-foreground">
+              Attention arcs
+            </Label>
+            <Switch id="attention-arcs" checked={showAttention} onCheckedChange={setShowAttention} />
           </div>
+
+          <div className="flex items-center justify-between gap-3">
+            <Label className="text-muted-foreground">Head</Label>
+            <Select
+              onValueChange={(value) => setSelectedHead(value === "all" ? "all" : Number(value))}
+              value={String(selectedHead)}
+            >
+              <SelectTrigger className="w-24">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All</SelectItem>
+                {Array.from({ length: 12 }, (_, index) => (
+                  <SelectItem value={String(index)} key={index}>
+                    H{index}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </CardContent>
+      </Card>
+
+      {run && selectedLayer && selectedToken && feature ? (
+        <>
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 uppercase">
+                <Braces className="size-4 text-primary" />
+                Prompt
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <p className="text-base leading-7 text-foreground">{run.prompt}</p>
+              <div className="grid gap-3">
+                {run.finalPredictions.map((prediction) => (
+                  <div className="grid grid-cols-[74px_minmax(0,1fr)_42px] items-center gap-3 text-sm" key={prediction.token}>
+                    <span className="truncate">{prediction.token}</span>
+                    <Progress value={prediction.probability * 100} />
+                    <strong className="text-right text-xs">{Math.round(prediction.probability * 100)}%</strong>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 uppercase">
+                <Eye className="size-4 text-primary" />
+                Selection
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <dl className="grid grid-cols-2 gap-3">
+                <div className="min-w-0 rounded-md border bg-background/60 p-3">
+                  <dt className="mb-1 text-xs uppercase text-muted-foreground">Layer</dt>
+                  <dd className="truncate text-sm">{selectedLayer.layer}</dd>
+                </div>
+                <div className="min-w-0 rounded-md border bg-background/60 p-3">
+                  <dt className="mb-1 text-xs uppercase text-muted-foreground">Token</dt>
+                  <dd className="truncate text-sm">{selectedToken.text.trim() || "space"}</dd>
+                </div>
+                <div className="min-w-0 rounded-md border bg-background/60 p-3">
+                  <dt className="mb-1 text-xs uppercase text-muted-foreground">{metricLabels[metric]}</dt>
+                  <dd className="truncate text-sm">{value.toFixed(3)}</dd>
+                </div>
+                <div className="min-w-0 rounded-md border bg-background/60 p-3">
+                  <dt className="mb-1 text-xs uppercase text-muted-foreground">Feature</dt>
+                  <dd className="truncate text-sm">{feature.id}</dd>
+                </div>
+              </dl>
+              <div className="border-l-2 border-primary pl-3">
+                <span className="text-xs text-muted-foreground">Top SAE feature</span>
+                <strong className="my-1 block text-sm">{feature.label}</strong>
+                <p className="text-xs text-muted-foreground">Activation {feature.activation}</p>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 uppercase">
+                <Network className="size-4 text-primary" />
+                Selected Layer Heads
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid gap-2">
+                {selectedLayer.attention.slice(0, 6).map((edge, index) => (
+                  <Button
+                    className={cn(
+                      "grid h-auto w-full grid-cols-[38px_minmax(0,1fr)_40px] justify-normal gap-2 px-3 py-2 text-left",
+                      selectedHead === edge.head && "border-primary bg-primary/15 text-primary"
+                    )}
+                    key={`${edge.head}-${edge.from}-${edge.to}-${index}`}
+                    onClick={() => setSelectedHead(edge.head)}
+                    type="button"
+                    variant="outline"
+                  >
+                    <span>H{edge.head}</span>
+                    <strong className="truncate text-xs font-semibold">
+                      {run.tokens[edge.from]?.text.trim() || "space"} {"->"} {run.tokens[edge.to]?.text.trim() || "space"}
+                    </strong>
+                    <em className="text-right text-xs not-italic text-primary">{edge.weight.toFixed(2)}</em>
+                  </Button>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        </>
+      ) : (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 uppercase">
+              <Eye className="size-4 text-primary" />
+              Inspector
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm leading-6 text-muted-foreground">No TransformerLens run is loaded.</p>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+
+  return (
+    <main className={cn(
+      "grid h-svh overflow-hidden bg-background text-foreground",
+      "grid-cols-[380px_minmax(0,1fr)]",
+      controlsOpen
+        ? "max-[1024px]:grid-cols-1 max-[1024px]:grid-rows-[minmax(0,1fr)_minmax(260px,42svh)]"
+        : "max-[1024px]:grid-cols-1 max-[1024px]:grid-rows-[minmax(0,1fr)_76px]"
+    )}>
+      <aside className="order-1 min-h-0 min-w-0 overflow-hidden border-r bg-card/45 max-[1024px]:order-2 max-[1024px]:border-r-0 max-[1024px]:border-t">
+        <div className="hidden h-[76px] items-center justify-between gap-3 px-4 max-[1024px]:flex">
+          <div className="flex min-w-0 items-center gap-3">
+            <BrainCircuit className="size-6 shrink-0 text-primary" />
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <h1 className="truncate text-base font-semibold">Sophon</h1>
+                <Badge variant="outline" className="hidden shrink-0 sm:inline-flex">
+                  {metricLabels[metric]}
+                </Badge>
+              </div>
+              <p className="truncate text-xs text-muted-foreground">
+                {run ? `${run.tokens.length} tokens · layer ${selection.layer}` : "Controls and inspector"}
+              </p>
+            </div>
+          </div>
+          <Button
+            aria-expanded={controlsOpen}
+            className="shrink-0"
+            onClick={() => setControlsOpen((open) => !open)}
+            type="button"
+            variant="outline"
+          >
+            <SlidersHorizontal className="size-4" />
+            <span>Controls</span>
+            {controlsOpen ? <ChevronDown className="size-4" /> : <ChevronUp className="size-4" />}
+          </Button>
+        </div>
+        <ScrollArea className={cn("h-full max-[1024px]:h-[calc(100%-76px)]", !controlsOpen && "max-[1024px]:hidden")}>
+          {controlPanel}
         </ScrollArea>
       </aside>
 
-      <section className="grid min-h-0 min-w-0 grid-rows-[82px_minmax(0,1fr)_auto_74px] bg-background max-[760px]:grid-rows-[76px_minmax(0,1fr)_auto_66px]">
-        <header className="flex items-center justify-between gap-4 border-b px-5 py-4">
+      <section className="order-2 grid min-h-0 min-w-0 grid-rows-[82px_minmax(0,1fr)_auto_auto] bg-background max-[1024px]:order-1 max-[760px]:grid-rows-[64px_minmax(0,1fr)_auto_auto]">
+        <header className="flex items-center justify-between gap-4 border-b px-5 py-4 max-[760px]:px-4 max-[760px]:py-3">
           <div className="min-w-0">
-            <p className="mb-1 text-xs uppercase text-muted-foreground">{run?.model ?? "gpt2-small / TransformerLens"}</p>
+            <p className="mb-1 truncate text-xs uppercase text-muted-foreground">{run?.model ?? "gpt2-small / TransformerLens"}</p>
             <h2 className="truncate text-2xl font-semibold max-[760px]:text-lg">{run?.title ?? "Run a prompt"}</h2>
-            <p className="mt-1 text-xs text-muted-foreground">{statusLabel}</p>
+            <p className="mt-1 truncate text-xs text-muted-foreground max-[760px]:hidden">{statusLabel}</p>
           </div>
           <div className="flex shrink-0 gap-2">
             <Button
@@ -570,9 +637,9 @@ export function SophonWorkbench() {
             >
               <RotateCcw className="size-4" />
             </Button>
-            <Button disabled={!canRun} onClick={executeRun} type="button">
+            <Button className="max-[520px]:px-3" disabled={!canRun} onClick={executeRun} type="button">
               <Play className="size-4" />
-              <span>{isRunning ? "Running" : "Run"}</span>
+              <span className="max-[520px]:sr-only">{isRunning ? "Running" : "Run"}</span>
             </Button>
           </div>
         </header>
@@ -598,11 +665,11 @@ export function SophonWorkbench() {
           )}
         </div>
 
-        <div className="border-t bg-background/95 px-5 py-3">
-          <div className="mx-auto w-full max-w-3xl rounded-2xl border bg-card/70 p-2 shadow-2xl shadow-black/20">
+        <div className="border-t bg-background/95 px-5 py-3 max-[760px]:px-3 max-[760px]:py-2">
+          <div className="mx-auto w-full max-w-3xl rounded-2xl border bg-card/70 p-2 shadow-2xl shadow-black/20 max-[520px]:rounded-xl">
             <div className="flex items-end gap-2">
               <Textarea
-                className="min-h-12 resize-none border-0 bg-transparent px-3 py-3 shadow-none focus-visible:ring-0"
+                className="min-h-12 resize-none border-0 bg-transparent px-3 py-3 shadow-none focus-visible:ring-0 max-[520px]:min-h-10 max-[520px]:py-2"
                 maxLength={MAX_PROMPT_CHARS}
                 onChange={(event) => setPromptInput(event.target.value)}
                 onKeyDown={(event) => {
@@ -619,9 +686,9 @@ export function SophonWorkbench() {
                 <Play className="size-4" />
               </Button>
             </div>
-            <div className="flex items-center justify-between gap-3 px-3 pb-1 text-[11px] text-muted-foreground">
-              <span>{isRunning ? "Running TransformerLens" : "Enter to run, Shift+Enter for a new line"}</span>
-              <span>
+            <div className="flex items-center justify-between gap-3 px-3 pb-1 text-[11px] text-muted-foreground max-[520px]:pt-1 max-[520px]:text-[10px]">
+              <span className="truncate">{isRunning ? "Running TransformerLens" : "Enter to run"}</span>
+              <span className="shrink-0">
                 {promptCharsRemaining} chars left · {MAX_PROMPT_TOKENS} token cap
               </span>
             </div>
@@ -631,7 +698,7 @@ export function SophonWorkbench() {
           </div>
         </div>
 
-        <footer className="flex items-center gap-2 overflow-x-auto border-t bg-card/45 px-5 py-3">
+        <footer className="flex items-center gap-2 overflow-x-auto border-t bg-card/45 px-5 py-3 max-[760px]:px-3 max-[760px]:py-2">
           {run ? (
             run.tokens.map((token) => (
               <Button
