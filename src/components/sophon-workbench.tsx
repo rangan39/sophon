@@ -19,11 +19,11 @@ import { useEffect, useState } from "react";
 import * as THREE from "three";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
@@ -35,6 +35,8 @@ type Selection = {
   layer: number;
   token: number;
 };
+
+type DetailMode = "prediction" | "feature" | "attention";
 
 const cellFootprint = 0.48;
 
@@ -367,6 +369,7 @@ export function SophonWorkbench() {
   const [isRunning, setIsRunning] = useState(false);
   const [runMessage, setRunMessage] = useState<string | null>(null);
   const [controlsOpen, setControlsOpen] = useState(false);
+  const [detailMode, setDetailMode] = useState<DetailMode>("prediction");
 
   const run = currentRun;
   const selectedLayer = run ? run.layers[Math.min(selection.layer, run.layers.length - 1)] : null;
@@ -405,9 +408,15 @@ export function SophonWorkbench() {
     setIsRunning(false);
   }
 
+  const detailTabs: Array<{ value: DetailMode; label: string; icon: typeof Eye }> = [
+    { value: "prediction", label: "Prediction", icon: Sparkles },
+    { value: "feature", label: "Feature", icon: Braces },
+    { value: "attention", label: "Attention", icon: Network }
+  ];
+
   const controlPanel = (
-    <div className="flex flex-col gap-4 p-4">
-      <div className="flex min-h-12 items-center gap-3 max-[1024px]:hidden">
+    <div className="flex flex-col p-4">
+      <div className="flex min-h-12 items-center gap-3 pb-4 max-[1024px]:hidden">
         <BrainCircuit className="size-7 text-primary" />
         <div className="min-w-0">
           <h1 className="text-2xl font-semibold tracking-normal">Sophon</h1>
@@ -415,50 +424,50 @@ export function SophonWorkbench() {
         </div>
       </div>
 
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="flex items-center gap-2 uppercase">
-            <Sparkles className="size-4 text-primary" />
-            Signal
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
+      <div className="rounded-lg border bg-background/45">
+        <div className="space-y-3 p-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <SlidersHorizontal className="size-4 text-primary" />
+              <span className="text-xs font-semibold uppercase text-muted-foreground">Controls</span>
+            </div>
+            <Badge variant="outline">{metricLabels[metric]}</Badge>
+          </div>
+
           <ToggleGroup
-            className="grid grid-cols-1"
+            className="grid grid-cols-3 gap-1"
             onValueChange={(nextMetric) => {
               if (nextMetric) setMetric(nextMetric as MetricMode);
             }}
             type="single"
             value={metric}
           >
-            <ToggleGroupItem className="justify-start" value="residual">
+            <ToggleGroupItem className="h-9 px-2" title="Residual stream signal" value="residual">
               <Activity className="size-4" />
-              Residual
+              <span className="text-xs">Res</span>
             </ToggleGroupItem>
-            <ToggleGroupItem className="justify-start" value="attribution">
+            <ToggleGroupItem className="h-9 px-2" title="Attribution signal" value="attribution">
               <Network className="size-4" />
-              Attribution
+              <span className="text-xs">Attr</span>
             </ToggleGroupItem>
-            <ToggleGroupItem className="justify-start" value="logit">
+            <ToggleGroupItem className="h-9 px-2" title="Logit lens confidence" value="logit">
               <Eye className="size-4" />
-              Logit lens
+              <span className="text-xs">Logit</span>
             </ToggleGroupItem>
           </ToggleGroup>
 
-          <div className="flex items-center justify-between gap-3">
-            <Label htmlFor="attention-arcs" className="text-muted-foreground">
-              Attention arcs
-            </Label>
-            <Switch id="attention-arcs" checked={showAttention} onCheckedChange={setShowAttention} />
-          </div>
-
-          <div className="flex items-center justify-between gap-3">
-            <Label className="text-muted-foreground">Head</Label>
+          <div className="grid grid-cols-[minmax(0,1fr)_96px] items-center gap-3">
+            <div className="flex items-center justify-between gap-3 rounded-md border bg-card/45 px-3 py-2">
+              <Label htmlFor="attention-arcs" className="text-xs text-muted-foreground">
+                Arcs
+              </Label>
+              <Switch id="attention-arcs" checked={showAttention} onCheckedChange={setShowAttention} />
+            </div>
             <Select
               onValueChange={(value) => setSelectedHead(value === "all" ? "all" : Number(value))}
               value={String(selectedHead)}
             >
-              <SelectTrigger className="w-24">
+              <SelectTrigger className="h-10">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -471,110 +480,147 @@ export function SophonWorkbench() {
               </SelectContent>
             </Select>
           </div>
-        </CardContent>
-      </Card>
+        </div>
 
-      {run && selectedLayer && selectedToken && feature ? (
-        <>
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 uppercase">
-                <Braces className="size-4 text-primary" />
-                Prompt
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <p className="text-base leading-7 text-foreground">{run.prompt}</p>
-              <div className="grid gap-3">
-                {run.finalPredictions.map((prediction) => (
-                  <div className="grid grid-cols-[74px_minmax(0,1fr)_42px] items-center gap-3 text-sm" key={prediction.token}>
-                    <span className="truncate">{prediction.token}</span>
-                    <Progress value={prediction.probability * 100} />
-                    <strong className="text-right text-xs">{Math.round(prediction.probability * 100)}%</strong>
+        <Separator />
+
+        <div className="p-3">
+          {run && selectedLayer && selectedToken && feature ? (
+            <div className="space-y-3">
+              <div className="grid grid-cols-[minmax(0,1fr)_72px] gap-2">
+                <div className="min-w-0 rounded-md border bg-card/45 px-3 py-2">
+                  <span className="text-[10px] uppercase text-muted-foreground">Selected token</span>
+                  <strong className="block truncate text-base">{selectedToken.text.trim() || "space"}</strong>
+                </div>
+                <div className="rounded-md border bg-card/45 px-3 py-2 text-right">
+                  <span className="text-[10px] uppercase text-muted-foreground">Layer</span>
+                  <strong className="block text-base">{selectedLayer.layer}</strong>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div className="rounded-md border bg-card/45 px-3 py-2">
+                  <span className="block text-muted-foreground">{metricLabels[metric]}</span>
+                  <strong>{value.toFixed(3)}</strong>
+                </div>
+                <div className="rounded-md border bg-card/45 px-3 py-2">
+                  <span className="block text-muted-foreground">Feature</span>
+                  <strong className="block truncate">{feature.id}</strong>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-md border bg-card/45 px-3 py-3">
+              <span className="text-xs font-semibold uppercase text-muted-foreground">Context</span>
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">Run a prompt to inspect tokens, layers, attention heads, and features.</p>
+            </div>
+          )}
+        </div>
+
+        <Separator />
+
+        <div className="p-3">
+          <div className="grid grid-cols-3 gap-1 rounded-md bg-muted/30 p-1">
+            {detailTabs.map((tab) => {
+              const Icon = tab.icon;
+              const selected = detailMode === tab.value;
+              return (
+                <button
+                  aria-pressed={detailMode === tab.value}
+                  className={cn(
+                    "inline-flex h-8 items-center justify-center gap-2 rounded-md px-2 text-xs font-medium transition-colors",
+                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    selected ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                  )}
+                  key={tab.value}
+                  onClick={(event) => {
+                    setDetailMode(tab.value);
+                    event.currentTarget.blur();
+                  }}
+                  type="button"
+                >
+                  <Icon className="size-3.5" />
+                  <span className="max-[420px]:sr-only">{tab.label}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="mt-3 min-h-[220px] rounded-md border bg-card/35 p-3">
+            {run && selectedLayer && selectedToken && feature ? (
+              <>
+                {detailMode === "prediction" ? (
+                  <div className="space-y-3">
+                    <div className="min-w-0">
+                      <span className="text-xs uppercase text-muted-foreground">Prompt</span>
+                      <p className="mt-1 line-clamp-3 text-sm leading-6">{run.prompt}</p>
+                    </div>
+                    <Separator />
+                    <div className="grid gap-3">
+                      {run.finalPredictions.map((prediction) => (
+                        <div className="grid grid-cols-[58px_minmax(0,1fr)_34px] items-center gap-2 text-xs" key={prediction.token}>
+                          <span className="truncate">{prediction.token}</span>
+                          <Progress value={prediction.probability * 100} />
+                          <strong className="text-right">{Math.round(prediction.probability * 100)}%</strong>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
+                ) : null}
 
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 uppercase">
-                <Eye className="size-4 text-primary" />
-                Selection
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <dl className="grid grid-cols-2 gap-3">
-                <div className="min-w-0 rounded-md border bg-background/60 p-3">
-                  <dt className="mb-1 text-xs uppercase text-muted-foreground">Layer</dt>
-                  <dd className="truncate text-sm">{selectedLayer.layer}</dd>
-                </div>
-                <div className="min-w-0 rounded-md border bg-background/60 p-3">
-                  <dt className="mb-1 text-xs uppercase text-muted-foreground">Token</dt>
-                  <dd className="truncate text-sm">{selectedToken.text.trim() || "space"}</dd>
-                </div>
-                <div className="min-w-0 rounded-md border bg-background/60 p-3">
-                  <dt className="mb-1 text-xs uppercase text-muted-foreground">{metricLabels[metric]}</dt>
-                  <dd className="truncate text-sm">{value.toFixed(3)}</dd>
-                </div>
-                <div className="min-w-0 rounded-md border bg-background/60 p-3">
-                  <dt className="mb-1 text-xs uppercase text-muted-foreground">Feature</dt>
-                  <dd className="truncate text-sm">{feature.id}</dd>
-                </div>
-              </dl>
-              <div className="border-l-2 border-primary pl-3">
-                <span className="text-xs text-muted-foreground">Top SAE feature</span>
-                <strong className="my-1 block text-sm">{feature.label}</strong>
-                <p className="text-xs text-muted-foreground">Activation {feature.activation}</p>
-              </div>
-            </CardContent>
-          </Card>
+                {detailMode === "feature" ? (
+                  <div className="space-y-3">
+                    <div>
+                      <span className="text-xs uppercase text-muted-foreground">Top SAE feature</span>
+                      <strong className="mt-1 block text-sm">{feature.label}</strong>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <div className="rounded-md border bg-background/60 px-3 py-2">
+                        <span className="block text-muted-foreground">Activation</span>
+                        <strong>{feature.activation}</strong>
+                      </div>
+                      <div className="min-w-0 rounded-md border bg-background/60 px-3 py-2">
+                        <span className="block text-muted-foreground">Feature ID</span>
+                        <strong className="block truncate">{feature.id}</strong>
+                      </div>
+                    </div>
+                    <p className="text-sm leading-6 text-muted-foreground">
+                      SAE feature labels are placeholders until the live path is connected to SAE data.
+                    </p>
+                  </div>
+                ) : null}
 
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 uppercase">
-                <Network className="size-4 text-primary" />
-                Selected Layer Heads
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="grid gap-2">
-                {selectedLayer.attention.slice(0, 6).map((edge, index) => (
-                  <Button
-                    className={cn(
-                      "grid h-auto w-full grid-cols-[38px_minmax(0,1fr)_40px] justify-normal gap-2 px-3 py-2 text-left",
-                      selectedHead === edge.head && "border-primary bg-primary/15 text-primary"
-                    )}
-                    key={`${edge.head}-${edge.from}-${edge.to}-${index}`}
-                    onClick={() => setSelectedHead(edge.head)}
-                    type="button"
-                    variant="outline"
-                  >
-                    <span>H{edge.head}</span>
-                    <strong className="truncate text-xs font-semibold">
-                      {run.tokens[edge.from]?.text.trim() || "space"} {"->"} {run.tokens[edge.to]?.text.trim() || "space"}
-                    </strong>
-                    <em className="text-right text-xs not-italic text-primary">{edge.weight.toFixed(2)}</em>
-                  </Button>
-                ))}
+                {detailMode === "attention" ? (
+                  <div className="grid gap-2">
+                    {selectedLayer.attention.slice(0, 6).map((edge, index) => (
+                      <Button
+                        className={cn(
+                          "grid h-auto w-full grid-cols-[34px_minmax(0,1fr)_36px] justify-normal gap-2 px-3 py-2 text-left",
+                          selectedHead === edge.head && "border-primary bg-primary/15 text-primary"
+                        )}
+                        key={`${edge.head}-${edge.from}-${edge.to}-${index}`}
+                        onClick={() => setSelectedHead(edge.head)}
+                        type="button"
+                        variant="outline"
+                      >
+                        <span className="text-xs">H{edge.head}</span>
+                        <strong className="truncate text-xs font-semibold">
+                          {run.tokens[edge.from]?.text.trim() || "space"} {"->"} {run.tokens[edge.to]?.text.trim() || "space"}
+                        </strong>
+                        <em className="text-right text-xs not-italic text-primary">{edge.weight.toFixed(2)}</em>
+                      </Button>
+                    ))}
+                  </div>
+                ) : null}
+              </>
+            ) : (
+              <div className="flex min-h-[180px] flex-col items-center justify-center text-center text-muted-foreground">
+                <Eye className="mb-3 size-5 text-primary" />
+                <p className="text-sm leading-6">Details appear after a real model run.</p>
               </div>
-            </CardContent>
-          </Card>
-        </>
-      ) : (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 uppercase">
-              <Eye className="size-4 text-primary" />
-              Inspector
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-sm leading-6 text-muted-foreground">No TransformerLens run is loaded.</p>
-          </CardContent>
-        </Card>
-      )}
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 
