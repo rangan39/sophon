@@ -19,7 +19,7 @@ const toggleGroupItemVariants = cva(
         default:
           "border-input bg-background hover:bg-accent hover:text-accent-foreground data-[state=on]:border-primary data-[state=on]:bg-primary data-[state=on]:text-primary-foreground",
         sophon:
-          "border-[#a6acb2]/60 bg-white/65 shadow-[inset_0_1px_0_rgb(255_255_255/.75)] hover:border-[#ff6a00]/55 hover:bg-[#fff0e4]/80 hover:text-accent-foreground data-[state=on]:border-[#d7192a]/70 data-[state=on]:bg-[linear-gradient(135deg,rgb(255_106_0/.26),rgb(215_25_42/.14)),rgb(255_255_255/.72)] data-[state=on]:text-primary data-[state=on]:shadow-[inset_0_1px_0_rgb(255_255_255/.8),0_0_18px_rgb(255_106_0/.24)]"
+          "border-[#d5d9dd] bg-white/65 shadow-[inset_0_1px_0_rgb(255_255_255/.75)] hover:border-[#ff1f3d]/45 hover:bg-[#fff0f3]/85 hover:text-accent-foreground data-[state=on]:border-primary data-[state=on]:bg-primary data-[state=on]:text-primary-foreground data-[state=on]:shadow-[0_0_18px_rgb(255_31_61/.24)]"
       }
     },
     defaultVariants: {

@@ -48,13 +48,68 @@ def positive_normalize(values: torch.Tensor) -> list[float]:
     return [round(float(item), 6) for item in scaled.reshape(-1)]
 
 
+def special_token_kind(model: HookedTransformer, token_id: int, role: str = "token") -> str:
+    tokenizer = model.tokenizer
+    if tokenizer is None:
+        return "normal"
+    if role == "prompt_bos" and token_id == tokenizer.bos_token_id:
+        return "bos"
+    if token_id == tokenizer.eos_token_id:
+        return "eos"
+    if token_id == tokenizer.bos_token_id:
+        return "bos"
+    if token_id in set(tokenizer.all_special_ids):
+        return "special"
+    return "normal"
+
+
+def token_display_text(kind: str, text: str) -> str | None:
+    if kind == "bos":
+        return "BOS"
+    if kind == "eos":
+        return "End"
+    if kind == "special":
+        return text.strip("<|>") or "Special"
+    return None
+
+
+def build_token(model: HookedTransformer, index: int, token_id: int, text: str) -> Token:
+    kind = special_token_kind(model, token_id, role="prompt_bos" if index == 0 else "token")
+    return Token(
+        index=index,
+        id=token_id,
+        text=text,
+        displayText=token_display_text(kind, text),
+        kind=kind,
+    )
+
+
 def top_predictions(model: HookedTransformer, logits: torch.Tensor, top_k: int) -> list[Prediction]:
     probs = logits[0, -1].softmax(dim=-1)
-    values, indices = probs.topk(top_k)
-    return [
-        Prediction(token=model.to_string(int(token_id)), probability=round(float(prob), 6))
-        for prob, token_id in zip(values.detach().cpu(), indices.detach().cpu(), strict=True)
-    ]
+    values, indices = probs.topk(min(probs.shape[-1], max(top_k * 5, top_k)))
+    normal_predictions: list[Prediction] = []
+    special_predictions: list[Prediction] = []
+
+    for prob, token_id_tensor in zip(values.detach().cpu(), indices.detach().cpu(), strict=True):
+        token_id = int(token_id_tensor)
+        text = model.to_string(token_id)
+        kind = special_token_kind(model, token_id, role="prediction")
+        prediction = Prediction(
+            token=text,
+            displayToken=token_display_text(kind, text),
+            kind="normal" if kind == "normal" else "special",
+            probability=round(float(prob), 6),
+        )
+        if kind == "normal":
+            normal_predictions.append(prediction)
+        else:
+            special_predictions.append(prediction)
+        if len(normal_predictions) >= top_k:
+            break
+
+    if normal_predictions:
+        return normal_predictions[:top_k]
+    return special_predictions[:1]
 
 
 def attention_edges(pattern: torch.Tensor, layer: int, top_k: int) -> list[AttentionEdge]:
@@ -76,6 +131,8 @@ def attention_edges(pattern: torch.Tensor, layer: int, top_k: int) -> list[Atten
                 AttentionEdge(
                     from_=destination,
                     to=source,
+                    query=destination,
+                    key=source,
                     head=head,
                     weight=round(float(weight), 6),
                 )
@@ -114,7 +171,7 @@ def extract_prompt_run(request: RunRequest) -> PromptRun:
         target_token_id = int(logits[0, -1].argmax(dim=-1).item())
 
         tokens = [
-            Token(index=index, id=int(token_id), text=text)
+            build_token(model, index, int(token_id), text)
             for index, (token_id, text) in enumerate(zip(token_ids, string_tokens, strict=True))
         ]
 
@@ -146,6 +203,7 @@ def extract_prompt_run(request: RunRequest) -> PromptRun:
         prompt=request.prompt,
         model=f"{request.model} / TransformerLens",
         source="transformer-lens",
+        featuresAvailable=False,
         expectedNextToken=predictions[0].token if predictions else None,
         tokens=tokens,
         layers=layers,

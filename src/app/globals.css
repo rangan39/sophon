@@ -22,6 +22,7 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --font-serif: var(--font-cormorant), Cormorant Garamond, EB Garamond, Georgia, ui-serif, serif;
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -37,19 +38,19 @@
   --card-foreground: #16151d;
   --popover: #ffffff;
   --popover-foreground: #16151d;
-  --primary: #d7192a;
+  --primary: #ff1f3d;
   --primary-foreground: #ffffff;
   --secondary: #eceff1;
   --secondary-foreground: #25282c;
   --muted: #edf0f2;
   --muted-foreground: #555b63;
-  --accent: #fff0e4;
+  --accent: #fff0f3;
   --accent-foreground: #3b2420;
-  --destructive: #d7192a;
+  --destructive: #ff1f3d;
   --destructive-foreground: #ffffff;
   --border: #b6bcc2;
   --input: #b6bcc2;
-  --ring: #ff6a00;
+  --ring: #ff1f3d;
 }
 
 * {

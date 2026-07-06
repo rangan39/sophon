@@ -14,7 +14,7 @@ const selectTriggerVariants = cva(
     variants: {
       variant: {
         default: "border-input bg-background",
-        sophon: "border-[#a6acb2]/60 bg-white/65 hover:border-[#ff6a00]/55 hover:bg-[#fff0e4]/80"
+        sophon: "border-[#d5d9dd] bg-white/65 hover:border-[#ff1f3d]/45 hover:bg-[#fff0f3]/85"
       }
     },
     defaultVariants: {

@@ -1,6 +1,7 @@
 "use client";
 
 import { Play, Terminal } from "lucide-react";
+import { HelpIcon } from "@/components/help-icon";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
@@ -51,16 +52,20 @@ export function PromptDock({
             <Play className="size-4" />
           </Button>
         </div>
-        <div className="flex items-center justify-between gap-3 px-3 pb-1 text-[11px] text-muted-foreground max-[520px]:pt-1 max-[520px]:text-[10px]">
-          <span className="truncate">{isRunning ? "Reconstructing activations" : "Enter to run"}</span>
-          <span className="shrink-0">
-            {promptCharsRemaining} chars left · {maxPromptTokens} token cap
-          </span>
-        </div>
         {runMessage ? (
           <div className="border-t border-primary/20 px-3 py-2 text-xs leading-5 text-primary">{runMessage}</div>
         ) : null}
       </Card>
+      <div className="flex items-center justify-between gap-3 px-1 pt-2 text-[11px] text-muted-foreground max-[520px]:text-[10px]">
+        <span className="truncate">{isRunning ? "Reconstructing activations" : "Enter to run"}</span>
+        <span className="flex shrink-0 items-center gap-1">
+          {promptCharsRemaining} chars left · {maxPromptTokens} token cap
+          <HelpIcon
+            label="Short prompts keep the 3D trace readable and keep local TransformerLens runs responsive."
+            side="top"
+          />
+        </span>
+      </div>
     </div>
   );
 }
