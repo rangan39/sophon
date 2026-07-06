@@ -7,9 +7,9 @@ const cardVariants = cva("rounded-lg border text-card-foreground", {
     variant: {
       default: "bg-card shadow-sm",
       glass:
-        "border-[#a6acb2]/70 bg-[linear-gradient(135deg,rgb(255_106_0/.16),transparent_34%),linear-gradient(155deg,rgb(215_25_42/.14),transparent_58%),rgb(255_255_255/.92)] shadow-[inset_0_1px_0_rgb(255_255_255/1),0_0_0_1px_rgb(215_25_42/.11),0_18px_52px_rgb(166_172_178/.20),0_8px_28px_rgb(255_106_0/.14)] backdrop-blur-[18px]",
+        "border-[#a6acb2]/70 bg-white/92 shadow-[inset_0_1px_0_rgb(255_255_255/1),0_0_0_1px_rgb(255_31_61/.10),0_18px_52px_rgb(166_172_178/.20)] backdrop-blur-[18px]",
       chrome:
-        "border-[#a6acb2]/65 bg-[linear-gradient(135deg,rgb(255_106_0/.08),transparent_42%),rgb(250_250_250/.74)] backdrop-blur-2xl",
+        "border-[#a6acb2]/65 bg-white/80 backdrop-blur-2xl",
       tile: "border-[#a6acb2]/55 bg-white/65 shadow-[inset_0_1px_0_rgb(255_255_255/.75)]"
     }
   },

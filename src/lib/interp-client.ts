@@ -1,4 +1,4 @@
-import { PromptRun } from "@/lib/prompt-run";
+import { parsePromptRun, PromptRun } from "@/lib/prompt-run";
 
 export const MAX_PROMPT_CHARS = 280;
 export const MAX_PROMPT_TOKENS = 64;
@@ -41,7 +41,16 @@ export async function runPrompt(prompt: string): Promise<RunPromptResult> {
       };
     }
 
-    return { ok: true, run: payload as PromptRun };
+    const run = parsePromptRun(payload);
+    if (!run) {
+      return {
+        ok: false,
+        code: "REQUEST_FAILED",
+        message: "The interpretability service returned an invalid run payload."
+      };
+    }
+
+    return { ok: true, run };
   } catch {
     return {
       ok: false,

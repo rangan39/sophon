@@ -13,11 +13,15 @@ class Token(BaseModel):
     index: int
     id: int
     text: str
+    displayText: str | None = None
+    kind: str = "normal"
 
 
 class AttentionEdge(BaseModel):
     from_: int = Field(serialization_alias="from")
     to: int
+    query: int
+    key: int
     weight: float
     head: int
 
@@ -39,6 +43,8 @@ class LayerState(BaseModel):
 
 class Prediction(BaseModel):
     token: str
+    displayToken: str | None = None
+    kind: str = "normal"
     probability: float
 
 
@@ -48,6 +54,7 @@ class PromptRun(BaseModel):
     prompt: str
     model: str
     source: str
+    featuresAvailable: bool = False
     expectedNextToken: str | None = None
     tokens: list[Token]
     layers: list[LayerState]

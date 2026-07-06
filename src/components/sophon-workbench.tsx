@@ -1,12 +1,11 @@
 "use client";
 
 import {
-  BrainCircuit,
   ChevronDown,
   ChevronUp,
-  Cpu,
+  LocateFixed,
   Play,
-  RotateCcw,
+  SquareSigma,
   SlidersHorizontal
 } from "lucide-react";
 import { useState } from "react";
@@ -51,8 +50,6 @@ export function SophonWorkbench() {
   const value = selectedLayer && selectedToken ? metricValue(selectedLayer, selectedToken.index, metric) : 0;
   const promptCharsRemaining = MAX_PROMPT_CHARS - promptInput.length;
   const canRun = promptInput.trim().length > 0 && !isRunning;
-  const statusLabel = isRunning ? "Reconstructing activations" : run ? "Trace locked" : "Awaiting prompt trace";
-  const syncValue = isRunning ? 58 : run ? 100 : 0;
 
   async function executeRun() {
     if (!canRun) return;
@@ -91,7 +88,7 @@ export function SophonWorkbench() {
         <div className="hidden h-[76px] items-center justify-between gap-3 px-4 max-[1024px]:flex">
           <div className="flex min-w-0 items-center gap-3">
             <div className={cn(sophonBrandMark, "grid size-9 shrink-0 place-items-center rounded-md border")}>
-              <BrainCircuit className="size-5 text-primary" />
+              <SquareSigma className="size-5 text-primary-foreground" />
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-2">
@@ -136,15 +133,10 @@ export function SophonWorkbench() {
         </ScrollArea>
       </aside>
 
-      <section className="order-2 grid min-h-0 min-w-0 grid-rows-[82px_minmax(0,1fr)_auto_auto] bg-background max-[1024px]:order-1 max-[760px]:grid-rows-[64px_minmax(0,1fr)_auto_auto]">
-        <header className={cn(sophonChromeSurface, "relative flex items-center justify-between gap-4 border-b px-5 py-4 max-[760px]:px-4 max-[760px]:py-3")}>
+      <section className="order-2 grid min-h-0 min-w-0 grid-rows-[58px_minmax(0,1fr)_auto_auto] bg-background max-[1024px]:order-1 max-[760px]:grid-rows-[54px_minmax(0,1fr)_auto_auto]">
+        <header className={cn(sophonChromeSurface, "relative flex items-center justify-between gap-4 border-b px-4 py-2.5 max-[760px]:px-3 max-[760px]:py-2")}>
           <div className="min-w-0">
-            <p className="mb-1 flex items-center gap-2 truncate text-xs uppercase text-muted-foreground">
-              <Cpu className="size-3.5 shrink-0 text-primary" />
-              <span className="truncate">{run?.model ?? "gpt2-small / TransformerLens"}</span>
-            </p>
-            <h2 className="truncate font-serif text-2xl font-semibold max-[760px]:text-lg">{run?.title ?? "Run a prompt"}</h2>
-            <p className="mt-1 truncate text-xs text-muted-foreground max-[760px]:hidden">{statusLabel}</p>
+            <h2 className="truncate font-serif text-xl font-semibold max-[760px]:text-lg">{run?.title ?? "Run a prompt"}</h2>
           </div>
           <div className="flex shrink-0 gap-2">
             <Button
@@ -155,18 +147,12 @@ export function SophonWorkbench() {
               type="button"
               variant="sophon"
             >
-              <RotateCcw className="size-4" />
+              <LocateFixed className="size-4" />
             </Button>
             <Button className="max-[520px]:px-3" disabled={!canRun} onClick={executeRun} type="button" variant="sophon-primary">
               <Play className="size-4" />
               <span className="max-[520px]:sr-only">{isRunning ? "Running" : "Run"}</span>
             </Button>
-          </div>
-          <div className="absolute inset-x-0 bottom-0 h-px bg-primary/10">
-            <div
-              className={cn("h-px bg-primary transition-all duration-500", isRunning && "animate-pulse shadow-[0_0_24px_rgb(215_25_42/.54),0_0_38px_rgb(255_106_0/.32)]")}
-              style={{ width: `${syncValue}%` }}
-            />
           </div>
         </header>
 
@@ -182,14 +168,16 @@ export function SophonWorkbench() {
               isRunning={isRunning}
             />
           ) : (
-            <div className="flex h-full flex-col items-center justify-center overflow-hidden px-7 text-center text-muted-foreground">
-              <div className={cn(sophonBrandMark, "grid size-16 place-items-center rounded-md border")}>
-                <BrainCircuit className="size-9 text-primary" />
+            <div className={cn(sophonGridSurface, "flex h-full flex-col items-center justify-center overflow-hidden px-7 text-center text-muted-foreground")}>
+              <div className="flex flex-col items-center rounded-lg border border-[#d5d9dd] bg-white/95 px-8 py-7 shadow-[0_12px_36px_rgb(166_172_178/.16)]">
+                <div className={cn(sophonBrandMark, "grid size-16 place-items-center rounded-md border")}>
+                  <SquareSigma className="size-9 text-primary-foreground" />
+                </div>
+                <h2 className="mt-4 font-serif text-xl font-semibold text-foreground">No model run loaded</h2>
+                <p className="mt-2 max-w-sm text-sm leading-6">
+                  Enter a short prompt and run the local or hosted TransformerLens service.
+                </p>
               </div>
-              <h2 className="mt-4 font-serif text-xl font-semibold text-foreground">No model run loaded</h2>
-              <p className="mt-2 max-w-sm text-sm leading-6">
-                Enter a short prompt and run the local or hosted TransformerLens service.
-              </p>
             </div>
           )}
         </div>
