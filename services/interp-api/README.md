@@ -35,3 +35,14 @@ INTERP_API_TOKEN=optional-shared-token
 If you want bearer-token protection, set `AUTH_TOKEN` in the Modal environment and set the same value as `INTERP_API_TOKEN` for the Next.js deployment. With no `AUTH_TOKEN`, the service accepts requests without authentication.
 
 The v1 service is intentionally compact: prompts are capped at 64 model tokens, dense activations are reduced to scalar summaries, and attention is returned as top-k edges only.
+
+## API Contract
+
+The frontend/backend contract is documented from the repository root:
+
+- `docs/api/interp-api-v1.md`
+- `docs/api/prompt-run.schema.json`
+
+Keep those files in sync when changing request fields, response fields, error codes, or authentication behavior.
+
+The backend remains in this monorepo for now. The repository split decision is recorded in `docs/architecture/0001-backend-repository-split.md`.

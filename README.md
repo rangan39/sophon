@@ -111,7 +111,19 @@ src/lib/
 
 services/interp-api/
   Modal-hosted TransformerLens API scaffold
+
+docs/api/
+  Versioned frontend/backend API contract and JSON Schema
+
+docs/architecture/
+  Architecture decision records
 ```
+
+## Frontend / Backend Boundary
+
+Sophon is still intentionally kept as a monorepo. The current architecture decision is documented in `docs/architecture/0001-backend-repository-split.md`: defer a permanent backend repository split until the API and deployment workflow are stable.
+
+The frontend/backend contract is documented in `docs/api/interp-api-v1.md`, with the canonical run payload and error shapes in `docs/api/prompt-run.schema.json`.
 
 ## Live TransformerLens Backend
 

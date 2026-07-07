@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rangan39/sophon/docs/api/prompt-run.schema.json",
+  "title": "Sophon Interpretability API v1",
+  "type": "object",
+  "oneOf": [
+    { "$ref": "#/$defs/RunRequest" },
+    { "$ref": "#/$defs/PromptRun" },
+    { "$ref": "#/$defs/ErrorResponse" }
+  ],
+  "$defs": {
+    "RunRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prompt"],
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 280
+        },
+        "model": {
+          "type": "string",
+          "default": "gpt2-small"
+        },
+        "maxTokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 128,
+          "default": 64
+        },
+        "topKPredictions": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 5
+        },
+        "topKAttentionEdges": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32,
+          "default": 8
+        }
+      }
+    },
+    "Token": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index", "id", "text", "kind"],
+      "properties": {
+        "index": { "type": "integer", "minimum": 0 },
+        "id": { "type": "integer", "minimum": 0 },
+        "text": { "type": "string" },
+        "displayText": { "type": ["string", "null"] },
+        "kind": {
+          "type": "string",
+          "enum": ["normal", "bos", "eos", "special"],
+          "default": "normal"
+        }
+      }
+    },
+    "AttentionEdge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to", "query", "key", "weight", "head"],
+      "properties": {
+        "from": { "type": "integer", "minimum": 0 },
+        "to": { "type": "integer", "minimum": 0 },
+        "query": { "type": "integer", "minimum": 0 },
+        "key": { "type": "integer", "minimum": 0 },
+        "weight": { "type": "number", "minimum": 0 },
+        "head": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "Feature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "activation", "label"],
+      "properties": {
+        "id": { "type": "string" },
+        "activation": { "type": "number" },
+        "label": { "type": "string" }
+      }
+    },
+    "LayerState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["layer", "residualNorm", "attribution", "logitConfidence", "topFeature", "attention"],
+      "properties": {
+        "layer": { "type": "integer", "minimum": 0 },
+        "residualNorm": {
+          "type": "array",
+          "items": { "type": "number" }
+        },
+        "attribution": {
+          "type": "array",
+          "items": { "type": "number" }
+        },
+        "logitConfidence": {
+          "type": "array",
+          "items": { "type": "number" }
+        },
+        "topFeature": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Feature" }
+        },
+        "attention": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/AttentionEdge" }
+        }
+      }
+    },
+    "Prediction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["token", "kind", "probability"],
+      "properties": {
+        "token": { "type": "string" },
+        "displayToken": { "type": ["string", "null"] },
+        "kind": {
+          "type": "string",
+          "enum": ["normal", "special"],
+          "default": "normal"
+        },
+        "probability": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "PromptRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "prompt",
+        "model",
+        "source",
+        "featuresAvailable",
+        "tokens",
+        "layers",
+        "finalPredictions"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "prompt": { "type": "string" },
+        "model": { "type": "string" },
+        "source": { "type": "string" },
+        "featuresAvailable": { "type": "boolean" },
+        "expectedNextToken": { "type": ["string", "null"] },
+        "tokens": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Token" }
+        },
+        "layers": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/LayerState" }
+        },
+        "finalPredictions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Prediction" }
+        }
+      }
+    },
+    "ErrorResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": ["PROMPT_TOO_LONG", "REQUEST_FAILED", "SERVICE_UNAVAILABLE"]
+        },
+        "message": { "type": "string" },
+        "tokenCount": { "type": "integer", "minimum": 0 },
+        "maxTokens": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}
+
