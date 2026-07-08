@@ -6,13 +6,9 @@ import { useEffect } from "react";
 import * as THREE from "three";
 import { HelpIcon } from "@/components/help-icon";
 import { displayTokenText, LayerState, MetricMode, PromptRun, metricValue } from "@/lib/prompt-run";
+import type { Selection } from "@/lib/selection";
 import { sophonGlassSurface, sophonGridSurface } from "@/lib/sophon-tailwind";
 import { cn } from "@/lib/utils";
-
-export type Selection = {
-  layer: number;
-  token: number;
-};
 
 const cellFootprint = 0.48;
 const signalBaseY = 0;

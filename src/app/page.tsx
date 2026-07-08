@@ -1,13 +1,4 @@
-"use client";
-
-import dynamic from "next/dynamic";
-
-const SophonWorkbench = dynamic(
-  () => import("@/components/sophon-workbench").then((module) => module.SophonWorkbench),
-  {
-    ssr: false
-  }
-);
+import { SophonWorkbench } from "@/components/sophon-workbench";
 
 export default function Home() {
   return <SophonWorkbench />;

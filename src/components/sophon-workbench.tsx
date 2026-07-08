@@ -8,18 +8,31 @@ import {
   SquareSigma,
   SlidersHorizontal
 } from "lucide-react";
+import dynamic from "next/dynamic";
 import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { DetailMode, SophonControlPanel } from "@/components/sophon-control-panel";
-import { Selection, SophonScene } from "@/components/sophon-scene";
 import { PromptDock } from "@/components/prompt-dock";
 import { TokenFooter } from "@/components/token-footer";
 import { MAX_PROMPT_CHARS, MAX_PROMPT_TOKENS, runPrompt } from "@/lib/interp-client";
 import { MetricMode, PromptRun, metricValue } from "@/lib/prompt-run";
+import type { Selection } from "@/lib/selection";
 import { sophonBrandMark, sophonChromeSurface, sophonGridSurface } from "@/lib/sophon-tailwind";
 import { cn } from "@/lib/utils";
+
+const SophonScene = dynamic(
+  () => import("@/components/sophon-scene").then((module) => module.SophonScene),
+  {
+    loading: () => (
+      <div className={cn(sophonGridSurface, "flex h-full items-center justify-center bg-background text-sm text-muted-foreground")}>
+        Loading 3D trace...
+      </div>
+    ),
+    ssr: false
+  }
+);
 
 const metricLabels: Record<MetricMode, string> = {
   residual: "Residual",
