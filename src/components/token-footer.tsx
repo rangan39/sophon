@@ -3,7 +3,7 @@
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { displayTokenText, PromptRun } from "@/lib/prompt-run";
-import { Selection } from "@/components/sophon-scene";
+import type { Selection } from "@/lib/selection";
 import { sophonChromeSurface } from "@/lib/sophon-tailwind";
 import { cn } from "@/lib/utils";
 
