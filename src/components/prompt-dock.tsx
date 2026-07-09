@@ -83,7 +83,7 @@ export function PromptDock({
         <span className="flex shrink-0 items-center gap-1">
           {promptCharsRemaining} chars left · {maxPromptTokens} token cap
           <HelpIcon
-            label="Short prompts keep the 3D trace readable and keep local TransformerLens runs responsive."
+            label="Short prompts keep the 3D trace readable and keep browser WebGPU runs responsive."
             side="top"
           />
         </span>
