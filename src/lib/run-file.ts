@@ -31,3 +31,34 @@ export function exportFilename(run: PromptRun): string {
   const date = new Date().toISOString().slice(0, 10);
   return `sophon-${base}-${date}.json`;
 }
+
+export type ParseRunFileResult =
+  | { ok: true; run: PromptRun }
+  | { ok: false; error: string };
+
+export function parseRunFile(text: string): ParseRunFileResult {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return { ok: false, error: "This file is not valid JSON." };
+  }
+
+  if (!value || typeof value !== "object" || (value as RunExport).app !== RUN_FILE_APP) {
+    return { ok: false, error: "This is not a Sophon run file." };
+  }
+
+  if ((value as RunExport).schemaVersion !== RUN_FILE_SCHEMA_VERSION) {
+    return {
+      ok: false,
+      error: "This file was made by a different version of Sophon and cannot be opened."
+    };
+  }
+
+  const run = parsePromptRun((value as RunExport).run);
+  if (!run) {
+    return { ok: false, error: "This Sophon file is missing or has invalid run data." };
+  }
+
+  return { ok: true, run };
+}
