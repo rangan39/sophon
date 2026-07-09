@@ -10,6 +10,14 @@ from sophon_interp.schemas import AttentionEdge, Feature, LayerState, Prediction
 ALLOWED_MODELS = {"gpt2-small"}
 
 
+def get_torch_device() -> str:
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
 class PromptTooLongError(ValueError):
     def __init__(self, token_count: int, max_tokens: int):
         super().__init__("Prompt exceeds the token cap.")
@@ -22,7 +30,7 @@ def get_model(model_name: str) -> HookedTransformer:
     if model_name not in ALLOWED_MODELS:
         raise ValueError(f"Unsupported model: {model_name}")
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = get_torch_device()
     model = HookedTransformer.from_pretrained(model_name, device=device)
     model.eval()
     return model

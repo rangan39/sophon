@@ -215,7 +215,7 @@ export function SophonWorkbench() {
                 </div>
                 <h2 className="mt-4 font-serif text-xl font-semibold text-foreground">No model run loaded</h2>
                 <p className="mt-2 max-w-sm text-sm leading-6">
-                  Enter a short prompt and run the local or hosted TransformerLens service.
+                  Enter a short prompt and run the browser ONNX WebGPU model.
                 </p>
               </div>
             </div>
@@ -252,7 +252,7 @@ function RunJobEmptyState({ prompt }: { prompt: string | null }) {
         </div>
         <h2 className="mt-4 font-serif text-xl font-semibold text-foreground">Running trace job</h2>
         <p className="mt-2 max-w-sm text-sm leading-6">
-          The prompt is locked while Sophon reconstructs tokens, residuals, features, and attention.
+          The prompt is locked while Sophon runs the ONNX WebGPU trace on this browser.
         </p>
         {prompt ? (
           <p className="mt-4 max-w-full truncate rounded-md border border-[#d5d9dd] bg-white px-3 py-2 font-mono text-xs text-foreground">

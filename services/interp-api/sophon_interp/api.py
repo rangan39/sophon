@@ -1,13 +1,21 @@
 import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from sophon_interp.runtime import ALLOWED_MODELS, PromptTooLongError, extract_prompt_run
+from sophon_interp.runtime import ALLOWED_MODELS, PromptTooLongError, extract_prompt_run, get_model
 from sophon_interp.schemas import RunRequest
 
 auth_scheme = HTTPBearer(auto_error=False)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    get_model("gpt2-small")
+    yield
 
 
 def verify_token(credentials: HTTPAuthorizationCredentials | None = Depends(auth_scheme)):
@@ -19,7 +27,7 @@ def verify_token(credentials: HTTPAuthorizationCredentials | None = Depends(auth
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Sophon Interpretability API")
+    app = FastAPI(title="Sophon Interpretability API", lifespan=lifespan)
     allowed_origins = os.environ.get("ALLOWED_ORIGINS", "*").split(",")
 
     app.add_middleware(

@@ -12,6 +12,8 @@ pip install -e .
 uvicorn sophon_interp.api:create_app --factory --reload
 ```
 
+On Apple Silicon, run the service directly instead of through Docker if you want PyTorch to use the system GPU through Metal/MPS. Docker on macOS generally will not expose the Apple GPU to PyTorch.
+
 ## Modal Development
 
 ```bash

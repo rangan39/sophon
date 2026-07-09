@@ -23,6 +23,8 @@ const metricLabels: Record<MetricMode, string> = {
 
 type ScenePalette = {
   background: string;
+  grid: string;
+  gridMajor: string;
   ink: string;
   metal: string;
   metalSoft: string;
@@ -35,7 +37,9 @@ type ScenePalette = {
 };
 
 const scenePalette: ScenePalette = {
-  background: "#fafafa",
+  background: "#ffffff",
+  grid: "#e7eaee",
+  gridMajor: "#cfd5db",
   ink: "#25282c",
   metal: "#4c5258",
   metalSoft: "#a6acb2",
@@ -68,6 +72,69 @@ function metricColorRange(metric: MetricMode, palette: ScenePalette) {
 
 function signalValueHeight(value: number) {
   return Math.max(0, Math.min(1, value)) * signalHeight;
+}
+
+function MeasurementGrid({ run, palette }: { run: PromptRun; palette: ScenePalette }) {
+  const tokenCount = run.tokens.length;
+  const layerCount = run.layers.length;
+  const [minX, minZ] = getCellPosition(0, 0, tokenCount, layerCount);
+  const [maxX, maxZ] = getCellPosition(layerCount - 1, tokenCount - 1, tokenCount, layerCount);
+  const gridY = signalBaseY - 0.006;
+  const marginX = 0.82;
+  const marginZ = 0.64;
+  const left = minX - marginX;
+  const right = maxX + marginX;
+  const back = minZ - marginZ;
+  const front = maxZ + marginZ;
+  const width = right - left;
+  const depth = front - back;
+  const minorXCount = Math.max(1, (tokenCount - 1) * 2);
+  const minorZCount = Math.max(1, (layerCount - 1) * 2);
+
+  return (
+    <group>
+      <mesh position={[(left + right) / 2, gridY - 0.004, (back + front) / 2]} rotation={[-Math.PI / 2, 0, 0]}>
+        <planeGeometry args={[width, depth]} />
+        <meshBasicMaterial color={palette.white} side={THREE.DoubleSide} toneMapped={false} />
+      </mesh>
+      {Array.from({ length: minorXCount + 1 }, (_, index) => {
+        const x = left + (width * index) / minorXCount;
+        const isMajor = run.tokens.some((token) => {
+          const [tokenX] = getCellPosition(0, token.index, tokenCount, layerCount);
+          return Math.abs(tokenX - x) < 0.03;
+        });
+
+        return (
+          <Line
+            key={`grid-x-${index}`}
+            points={[[x, gridY, back], [x, gridY, front]]}
+            color={isMajor ? palette.gridMajor : palette.grid}
+            lineWidth={isMajor ? 0.8 : 0.45}
+            transparent
+            opacity={isMajor ? 0.82 : 0.66}
+          />
+        );
+      })}
+      {Array.from({ length: minorZCount + 1 }, (_, index) => {
+        const z = back + (depth * index) / minorZCount;
+        const isMajor = run.layers.some((layer) => {
+          const [, layerZ] = getCellPosition(layer.layer, 0, tokenCount, layerCount);
+          return Math.abs(layerZ - z) < 0.03;
+        });
+
+        return (
+          <Line
+            key={`grid-z-${index}`}
+            points={[[left, gridY, z], [right, gridY, z]]}
+            color={isMajor ? palette.gridMajor : palette.grid}
+            lineWidth={isMajor ? 0.8 : 0.45}
+            transparent
+            opacity={isMajor ? 0.82 : 0.66}
+          />
+        );
+      })}
+    </group>
+  );
 }
 
 function ActivationCell({
@@ -311,6 +378,7 @@ export function SophonScene({
         <pointLight position={[5, 3, -5]} intensity={0.95} color={palette.red} />
         <pointLight position={[0, 6, 0]} intensity={0.45} color={palette.residualLow} />
         <group>
+          <MeasurementGrid run={run} palette={palette} />
           {run.layers.map((layer) =>
             run.tokens.map((token) => (
               <ActivationCell

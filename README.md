@@ -7,19 +7,19 @@ The current MVP is a Next.js + React Three Fiber app that shows how transformer 
 ## What It Shows
 
 - A 3D layer-by-token grid for transformer-style activations
-- Prompt input backed by a TransformerLens service
-- Metric modes for residual signal, attribution, and logit-lens confidence
+- Prompt input backed by a browser ONNX WebGPU runtime
+- Metric modes for hidden-state signal summaries
 - Attention-style arcs between tokens
 - A side inspector for selected token/layer details
 - SAE-style feature labels and activation values
 
 ## Important Note
 
-This MVP requires real run data from the TransformerLens API path.
+Sophon is configured to hard-fail when browser WebGPU is unavailable. There is no server fallback in the frontend path.
 
-The app includes a Modal + FastAPI + TransformerLens service scaffold in `services/interp-api/` for live `gpt2-small` runs. The prompt runner calls the backend and renders real tokenization, residual summaries, logit-lens confidence, and top-k attention arcs.
+The browser runtime requires an ONNX/WebGPU model export that exposes hidden states. Set `NEXT_PUBLIC_SOPHON_WEBGPU_MODEL` to the Hugging Face model id for that export. If the configured model only exposes logits, Sophon fails instead of fabricating trace measurements.
 
-SAE feature labels are still placeholders in the live path. Real SAE integration is a later step.
+SAE feature labels are still placeholders. Real SAE integration is a later step.
 
 ## Tech Stack
 
@@ -30,6 +30,7 @@ SAE feature labels are still placeholders in the live path. Real SAE integration
 - React Three Fiber
 - Drei
 - Lucide icons
+- ONNX Runtime WebGPU through Transformers.js
 
 ## Getting Started
 
@@ -57,44 +58,10 @@ Build for production:
 npm run build
 ```
 
-## Docker Compose
-
-Docker Compose runs the Next.js frontend and the local TransformerLens API together.
+Optional browser model override:
 
 ```bash
-docker compose up --build
-```
-
-If port `3000` is already in use:
-
-```bash
-FRONTEND_PORT=3001 docker compose up --build
-```
-
-Open:
-
-```txt
-http://localhost:3000
-```
-
-Check the backend:
-
-```bash
-curl http://localhost:8000/health
-curl http://localhost:8000/models
-```
-
-In this setup, the browser talks to Next.js at `localhost:3000`, and Next.js proxies `/api/runs` to `http://interp-api:8000` inside the Docker network. The first prompt run can be slow because the backend downloads and initializes `gpt2-small`. Hugging Face and Torch caches are stored in Docker volumes so model files are reused across runs.
-
-Local Compose defaults live in `.env.example`:
-
-```txt
-INTERP_API_URL=http://interp-api:8000
-INTERP_API_TOKEN=
-AUTH_TOKEN=
-ALLOWED_ORIGINS=http://localhost:3000
-FRONTEND_PORT=3000
-BACKEND_PORT=8000
+NEXT_PUBLIC_SOPHON_WEBGPU_MODEL=your-org/your-gpt2-hidden-states-onnx npm run dev
 ```
 
 ## Project Structure
@@ -110,42 +77,12 @@ src/lib/
   Shared prompt-run types and frontend API client
 
 services/interp-api/
-  Modal-hosted TransformerLens API scaffold
+  Legacy/research TransformerLens API scaffold
 ```
 
-## Live TransformerLens Backend
+## Legacy TransformerLens Backend
 
-The frontend caps prompt input at 280 characters. The backend is still authoritative and rejects prompts over 64 model tokens.
-
-Local backend development:
-
-```bash
-cd services/interp-api
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
-uvicorn sophon_interp.api:create_app --factory --reload
-```
-
-Modal development:
-
-```bash
-cd services/interp-api
-modal serve modal_app.py
-```
-
-Deploy:
-
-```bash
-modal deploy services/interp-api/modal_app.py
-```
-
-Frontend environment:
-
-```txt
-INTERP_API_URL=https://your-modal-app.modal.run
-INTERP_API_TOKEN=optional-shared-token
-```
+`services/interp-api/` remains in the repo for research comparison and future export work. The frontend no longer calls it.
 
 ## Mechanistic Interpretability Concepts
 
@@ -153,19 +90,18 @@ Sophon visualizes a few core ideas:
 
 - **Tokens**: pieces of the prompt processed by the model
 - **Layers**: repeated transformer blocks that update token representations
-- **Residual stream**: the model's main internal information channel
+- **Hidden states**: model representations emitted by the browser ONNX export
 - **Attention**: how one token reads information from another token
-- **Logit lens**: what token the model appears to be leaning toward at an intermediate layer
 - **SAE features**: interpretable feature-like directions learned from activations
 
 ## Roadmap
 
 - Load real Neuronpedia export files
 - Add prompt-run JSON import/export
-- Add TransformerLens or SAELens backend integration
+- Add a custom ONNX export with hidden states and attention tensors
 - Add activation patching views
 - Add side-by-side clean/corrupt prompt comparison
-- Add real logit-lens and attribution data
+- Add real attribution data
 - Add saved analysis sessions
 
 ## Repository
