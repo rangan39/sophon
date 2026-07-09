@@ -3,13 +3,14 @@
 import {
   ChevronDown,
   ChevronUp,
+  LoaderCircle,
   LocateFixed,
   Play,
   SquareSigma,
   SlidersHorizontal
 } from "lucide-react";
 import dynamic from "next/dynamic";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -43,6 +44,7 @@ const metricLabels: Record<MetricMode, string> = {
 export function SophonWorkbench() {
   const [currentRun, setCurrentRun] = useState<PromptRun | null>(null);
   const [promptInput, setPromptInput] = useState("");
+  const [lockedPrompt, setLockedPrompt] = useState<string | null>(null);
   const [metric, setMetric] = useState<MetricMode>("residual");
   const [showAttention, setShowAttention] = useState(true);
   const [selectedHead, setSelectedHead] = useState<number | "all">("all");
@@ -51,6 +53,7 @@ export function SophonWorkbench() {
   const [runMessage, setRunMessage] = useState<string | null>(null);
   const [controlsOpen, setControlsOpen] = useState(false);
   const [detailMode, setDetailMode] = useState<DetailMode>("prediction");
+  const runJobId = useRef(0);
 
   const run = currentRun;
   const selectedLayer = run ? run.layers[Math.min(selection.layer, run.layers.length - 1)] : null;
@@ -64,28 +67,47 @@ export function SophonWorkbench() {
   const promptCharsRemaining = MAX_PROMPT_CHARS - promptInput.length;
   const canRun = promptInput.trim().length > 0 && !isRunning;
 
-  async function executeRun() {
+  function executeRun() {
     if (!canRun) return;
 
+    const jobId = runJobId.current + 1;
+    const prompt = promptInput.trim();
+    runJobId.current = jobId;
+    setPromptInput(prompt);
     setIsRunning(true);
+    setLockedPrompt(prompt);
     setRunMessage(null);
 
-    const result = await runPrompt(promptInput.trim());
+    void runPrompt(prompt)
+      .then((result) => {
+        if (jobId !== runJobId.current) return;
 
-    if (result.ok) {
-      setCurrentRun(result.run);
-      setSelectedHead("all");
-      setSelection({
-        layer: Math.min(8, result.run.layers.length - 1),
-        token: Math.max(0, result.run.tokens.length - 1)
+        if (result.ok) {
+          setCurrentRun(result.run);
+          setSelectedHead("all");
+          setSelection({
+            layer: Math.min(8, result.run.layers.length - 1),
+            token: Math.max(0, result.run.tokens.length - 1)
+          });
+          return;
+        }
+
+        if (result.code === "PROMPT_TOO_LONG" && result.tokenCount && result.maxTokens) {
+          setRunMessage(`This prompt is ${result.tokenCount} tokens. Keep it under ${result.maxTokens} tokens.`);
+          return;
+        }
+
+        setRunMessage(result.message);
+      })
+      .catch(() => {
+        if (jobId !== runJobId.current) return;
+        setRunMessage("The interpretability service is not reachable.");
+      })
+      .finally(() => {
+        if (jobId !== runJobId.current) return;
+        setIsRunning(false);
+        setLockedPrompt(null);
       });
-    } else if (result.code === "PROMPT_TOO_LONG" && result.tokenCount && result.maxTokens) {
-      setRunMessage(`This prompt is ${result.tokenCount} tokens. Keep it under ${result.maxTokens} tokens.`);
-    } else {
-      setRunMessage(result.message);
-    }
-
-    setIsRunning(false);
   }
 
   return (
@@ -171,15 +193,20 @@ export function SophonWorkbench() {
 
         <div className="min-h-0 overflow-hidden">
           {run ? (
-            <SophonScene
-              run={run}
-              metric={metric}
-              selection={selection}
-              setSelection={setSelection}
-              showAttention={showAttention}
-              selectedHead={selectedHead}
-              isRunning={isRunning}
-            />
+            <div className="relative h-full">
+              <SophonScene
+                run={run}
+                metric={metric}
+                selection={selection}
+                setSelection={setSelection}
+                showAttention={showAttention}
+                selectedHead={selectedHead}
+                isRunning={isRunning}
+              />
+              {isRunning ? <RunJobOverlay prompt={lockedPrompt} /> : null}
+            </div>
+          ) : isRunning ? (
+            <RunJobEmptyState prompt={lockedPrompt} />
           ) : (
             <div className={cn(sophonGridSurface, "flex h-full flex-col items-center justify-center overflow-hidden px-7 text-center text-muted-foreground")}>
               <div className="flex flex-col items-center rounded-lg border border-[#d5d9dd] bg-white/95 px-8 py-7 shadow-[0_12px_36px_rgb(166_172_178/.16)]">
@@ -201,6 +228,7 @@ export function SophonWorkbench() {
           promptCharsRemaining={promptCharsRemaining}
           canRun={canRun}
           isRunning={isRunning}
+          isPromptLocked={Boolean(lockedPrompt)}
           runMessage={runMessage}
           executeRun={() => void executeRun()}
           maxPromptChars={MAX_PROMPT_CHARS}
@@ -210,5 +238,47 @@ export function SophonWorkbench() {
         <TokenFooter run={run} selection={selection} setSelection={setSelection} />
       </section>
     </main>
+  );
+}
+
+function RunJobEmptyState({ prompt }: { prompt: string | null }) {
+  return (
+    <div className={cn(sophonGridSurface, "flex h-full flex-col items-center justify-center overflow-hidden px-7 text-center text-muted-foreground")}>
+      <div className="flex w-full max-w-md flex-col items-center rounded-lg border border-[#d5d9dd] bg-white/95 px-8 py-7 shadow-[0_12px_36px_rgb(166_172_178/.16)]">
+        <div className="relative grid size-16 place-items-center">
+          <div className="absolute inset-0 rounded-md border border-primary/35 bg-primary/10" />
+          <div className="absolute inset-1 rounded-md border border-primary/45 animate-ping" />
+          <LoaderCircle className="relative size-8 animate-spin text-primary" />
+        </div>
+        <h2 className="mt-4 font-serif text-xl font-semibold text-foreground">Running trace job</h2>
+        <p className="mt-2 max-w-sm text-sm leading-6">
+          The prompt is locked while Sophon reconstructs tokens, residuals, features, and attention.
+        </p>
+        {prompt ? (
+          <p className="mt-4 max-w-full truncate rounded-md border border-[#d5d9dd] bg-white px-3 py-2 font-mono text-xs text-foreground">
+            {prompt}
+          </p>
+        ) : null}
+        <div className="mt-5 grid w-full grid-cols-3 gap-2">
+          <div className="h-1.5 animate-pulse rounded-full bg-primary/80" />
+          <div className="h-1.5 animate-pulse rounded-full bg-[#a6acb2]/60 [animation-delay:150ms]" />
+          <div className="h-1.5 animate-pulse rounded-full bg-primary/50 [animation-delay:300ms]" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RunJobOverlay({ prompt }: { prompt: string | null }) {
+  return (
+    <div className="pointer-events-none absolute inset-x-4 top-4 z-10 flex justify-center">
+      <div className="flex max-w-[min(620px,100%)] items-center gap-3 rounded-lg border border-[#d5d9dd] bg-white/92 px-4 py-3 text-sm shadow-[0_12px_32px_rgb(166_172_178/.18)] backdrop-blur-xl">
+        <LoaderCircle className="size-4 shrink-0 animate-spin text-primary" />
+        <div className="min-w-0 text-left">
+          <p className="font-medium text-foreground">Running trace job</p>
+          <p className="truncate text-xs text-muted-foreground">{prompt ?? "Prompt locked until the run completes."}</p>
+        </div>
+      </div>
+    </div>
   );
 }
