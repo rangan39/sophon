@@ -1,0 +1,57 @@
+{
+  "base_model": "sshleifer/tiny-gpt2",
+  "format": "onnx",
+  "task": "sophon-trace-causal-lm",
+  "sequence_length": 64,
+  "opset": 18,
+  "inputs": {
+    "input_ids": [
+      1,
+      64
+    ],
+    "attention_mask": [
+      1,
+      64
+    ]
+  },
+  "outputs": {
+    "logits": [
+      1,
+      64,
+      50257
+    ],
+    "hidden_states": [
+      [
+        1,
+        64,
+        2
+      ],
+      [
+        1,
+        64,
+        2
+      ],
+      [
+        1,
+        64,
+        2
+      ]
+    ]
+  },
+  "output_names": [
+    "logits",
+    "hidden_state_0",
+    "hidden_state_1",
+    "hidden_state_2"
+  ],
+  "validation": {
+    "onnx_checked": true,
+    "provider": "CPUExecutionProvider",
+    "max_abs_diff": {
+      "logits": 5.066394805908203e-07,
+      "hidden_state_0": 0.0,
+      "hidden_state_1": 9.313225746154785e-10,
+      "hidden_state_2": 3.874301910400391e-06
+    }
+  }
+}
