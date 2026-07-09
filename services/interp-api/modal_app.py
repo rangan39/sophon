@@ -17,7 +17,8 @@ app = modal.App("sophon-interp-api", image=image)
 @app.function(
     gpu="T4",
     timeout=300,
-    scaledown_window=300,
+    min_containers=1,
+    scaledown_window=1200,
 )
 @modal.asgi_app()
 def fastapi_app():
