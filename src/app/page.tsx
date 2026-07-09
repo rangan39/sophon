@@ -1,5 +1,5 @@
-import { SophonWorkbench } from "@/components/sophon-workbench";
+import { WorkbenchClient } from "@/app/workbench-client";
 
 export default function Home() {
-  return <SophonWorkbench />;
+  return <WorkbenchClient />;
 }
