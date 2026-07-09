@@ -7,7 +7,8 @@ import {
   LocateFixed,
   Play,
   SquareSigma,
-  SlidersHorizontal
+  SlidersHorizontal,
+  Terminal
 } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useRef, useState } from "react";
@@ -17,7 +18,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { DetailMode, SophonControlPanel } from "@/components/sophon-control-panel";
 import { PromptDock } from "@/components/prompt-dock";
 import { TokenFooter } from "@/components/token-footer";
-import { MAX_PROMPT_CHARS, MAX_PROMPT_TOKENS, runPrompt } from "@/lib/interp-client";
+import { MAX_PROMPT_CHARS, MAX_PROMPT_TOKENS, RuntimeLogEvent, runPrompt } from "@/lib/interp-client";
 import { MetricMode, PromptRun, metricValue } from "@/lib/prompt-run";
 import type { Selection } from "@/lib/selection";
 import { sophonBrandMark, sophonChromeSurface, sophonGridSurface } from "@/lib/sophon-tailwind";
@@ -41,6 +42,11 @@ const metricLabels: Record<MetricMode, string> = {
   logit: "Logit lens"
 };
 
+type RuntimeLog = RuntimeLogEvent & {
+  id: number;
+  time: string;
+};
+
 export function SophonWorkbench() {
   const [currentRun, setCurrentRun] = useState<PromptRun | null>(null);
   const [promptInput, setPromptInput] = useState("");
@@ -51,9 +57,11 @@ export function SophonWorkbench() {
   const [selection, setSelection] = useState<Selection>({ layer: 0, token: 0 });
   const [isRunning, setIsRunning] = useState(false);
   const [runMessage, setRunMessage] = useState<string | null>(null);
+  const [runtimeLogs, setRuntimeLogs] = useState<RuntimeLog[]>([]);
   const [controlsOpen, setControlsOpen] = useState(false);
   const [detailMode, setDetailMode] = useState<DetailMode>("prediction");
   const runJobId = useRef(0);
+  const runtimeLogId = useRef(0);
 
   const run = currentRun;
   const selectedLayer = run ? run.layers[Math.min(selection.layer, run.layers.length - 1)] : null;
@@ -67,6 +75,23 @@ export function SophonWorkbench() {
   const promptCharsRemaining = MAX_PROMPT_CHARS - promptInput.length;
   const canRun = promptInput.trim().length > 0 && !isRunning;
 
+  function appendRuntimeLog(event: RuntimeLogEvent) {
+    const id = runtimeLogId.current + 1;
+    runtimeLogId.current = id;
+    setRuntimeLogs((logs) => [
+      ...logs.slice(-49),
+      {
+        ...event,
+        id,
+        time: new Date().toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit"
+        })
+      }
+    ]);
+  }
+
   function executeRun() {
     if (!canRun) return;
 
@@ -77,8 +102,11 @@ export function SophonWorkbench() {
     setIsRunning(true);
     setLockedPrompt(prompt);
     setRunMessage(null);
+    setRuntimeLogs([]);
 
-    void runPrompt(prompt)
+    void runPrompt(prompt, {
+      onLog: appendRuntimeLog
+    })
       .then((result) => {
         if (jobId !== runJobId.current) return;
 
@@ -101,7 +129,7 @@ export function SophonWorkbench() {
       })
       .catch(() => {
         if (jobId !== runJobId.current) return;
-        setRunMessage("The interpretability service is not reachable.");
+        setRunMessage("Browser WebGPU trace failed.");
       })
       .finally(() => {
         if (jobId !== runJobId.current) return;
@@ -203,13 +231,13 @@ export function SophonWorkbench() {
                 selectedHead={selectedHead}
                 isRunning={isRunning}
               />
-              {isRunning ? <RunJobOverlay prompt={lockedPrompt} /> : null}
+              {isRunning ? <RunJobOverlay logs={runtimeLogs} prompt={lockedPrompt} /> : null}
             </div>
           ) : isRunning ? (
-            <RunJobEmptyState prompt={lockedPrompt} />
+            <RunJobEmptyState logs={runtimeLogs} prompt={lockedPrompt} />
           ) : (
             <div className={cn(sophonGridSurface, "flex h-full flex-col items-center justify-center overflow-hidden px-7 text-center text-muted-foreground")}>
-              <div className="flex flex-col items-center rounded-lg border border-[#d5d9dd] bg-white/95 px-8 py-7 shadow-[0_12px_36px_rgb(166_172_178/.16)]">
+              <div className="flex w-full max-w-xl flex-col items-center rounded-lg border border-[#d5d9dd] bg-white/95 px-8 py-7 shadow-[0_12px_36px_rgb(166_172_178/.16)]">
                 <div className={cn(sophonBrandMark, "grid size-16 place-items-center rounded-md border")}>
                   <SquareSigma className="size-9 text-primary-foreground" />
                 </div>
@@ -217,6 +245,7 @@ export function SophonWorkbench() {
                 <p className="mt-2 max-w-sm text-sm leading-6">
                   Enter a short prompt and run the browser ONNX WebGPU model.
                 </p>
+                {runtimeLogs.length > 0 ? <RuntimeLogPanel className="mt-5 w-full" logs={runtimeLogs} /> : null}
               </div>
             </div>
           )}
@@ -241,7 +270,7 @@ export function SophonWorkbench() {
   );
 }
 
-function RunJobEmptyState({ prompt }: { prompt: string | null }) {
+function RunJobEmptyState({ logs, prompt }: { logs: RuntimeLog[]; prompt: string | null }) {
   return (
     <div className={cn(sophonGridSurface, "flex h-full flex-col items-center justify-center overflow-hidden px-7 text-center text-muted-foreground")}>
       <div className="flex w-full max-w-md flex-col items-center rounded-lg border border-[#d5d9dd] bg-white/95 px-8 py-7 shadow-[0_12px_36px_rgb(166_172_178/.16)]">
@@ -264,20 +293,67 @@ function RunJobEmptyState({ prompt }: { prompt: string | null }) {
           <div className="h-1.5 animate-pulse rounded-full bg-[#a6acb2]/60 [animation-delay:150ms]" />
           <div className="h-1.5 animate-pulse rounded-full bg-primary/50 [animation-delay:300ms]" />
         </div>
+        <RuntimeLogPanel className="mt-5 w-full" logs={logs} />
       </div>
     </div>
   );
 }
 
-function RunJobOverlay({ prompt }: { prompt: string | null }) {
+function RunJobOverlay({ logs, prompt }: { logs: RuntimeLog[]; prompt: string | null }) {
+  const latestLog = logs.at(-1);
+
   return (
     <div className="pointer-events-none absolute inset-x-4 top-4 z-10 flex justify-center">
       <div className="flex max-w-[min(620px,100%)] items-center gap-3 rounded-lg border border-[#d5d9dd] bg-white/92 px-4 py-3 text-sm shadow-[0_12px_32px_rgb(166_172_178/.18)] backdrop-blur-xl">
         <LoaderCircle className="size-4 shrink-0 animate-spin text-primary" />
         <div className="min-w-0 text-left">
           <p className="font-medium text-foreground">Running trace job</p>
-          <p className="truncate text-xs text-muted-foreground">{prompt ?? "Prompt locked until the run completes."}</p>
+          <p className="truncate text-xs text-muted-foreground">{latestLog ? `${latestLog.message}${latestLog.detail ? ` · ${latestLog.detail}` : ""}` : prompt ?? "Prompt locked until the run completes."}</p>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function RuntimeLogPanel({
+  className,
+  logs
+}: {
+  className?: string;
+  logs: RuntimeLog[];
+}) {
+  return (
+    <div className={cn("overflow-hidden rounded-md border border-[#d5d9dd] bg-[#fbfbfb] text-left shadow-[inset_0_1px_0_rgb(255_255_255/.85)]", className)}>
+      <div className="flex items-center justify-between border-b border-[#d5d9dd] px-3 py-2">
+        <span className="flex items-center gap-2 text-[10px] font-semibold uppercase text-muted-foreground">
+          <Terminal className="size-3.5 text-primary" />
+          WebGPU logs
+        </span>
+        <span className="font-mono text-[10px] text-muted-foreground">{logs.length}</span>
+      </div>
+      <div className="max-h-40 space-y-1 overflow-y-auto px-3 py-2 font-mono text-[11px] leading-5">
+        {logs.length > 0 ? (
+          logs.map((log) => (
+            <div className="grid grid-cols-[62px_64px_minmax(0,1fr)] gap-2" key={log.id}>
+              <span className="text-muted-foreground">{log.time}</span>
+              <span className={cn(
+                "uppercase",
+                log.level === "error" && "text-primary",
+                log.level === "warning" && "text-[#8a5a00]",
+                log.level === "success" && "text-[#47705a]",
+                log.level === "info" && "text-muted-foreground"
+              )}>
+                {log.level}
+              </span>
+              <span className="min-w-0 truncate text-foreground">
+                {log.message}
+                {log.detail ? <span className="text-muted-foreground"> · {log.detail}</span> : null}
+              </span>
+            </div>
+          ))
+        ) : (
+          <div className="text-muted-foreground">Logs will appear when a browser WebGPU trace starts.</div>
+        )}
       </div>
     </div>
   );

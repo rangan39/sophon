@@ -14,6 +14,18 @@ export type RunPromptResult =
       maxTokens?: number;
     };
 
+export type RuntimeLogLevel = "info" | "success" | "warning" | "error";
+
+export type RuntimeLogEvent = {
+  level: RuntimeLogLevel;
+  message: string;
+  detail?: string;
+};
+
+export type RunPromptOptions = {
+  onLog?: (event: RuntimeLogEvent) => void;
+};
+
 type BrowserTraceRuntime = {
   model: CallableModel;
   tokenizer: CallableTokenizer;
@@ -35,9 +47,14 @@ type TensorLike = {
 
 let runtimePromise: Promise<BrowserTraceRuntime> | null = null;
 
-export async function runPrompt(prompt: string): Promise<RunPromptResult> {
+export async function runPrompt(prompt: string, options: RunPromptOptions = {}): Promise<RunPromptResult> {
+  const log = options.onLog ?? (() => undefined);
+
   try {
+    log({ level: "info", message: "Starting browser WebGPU trace", detail: WEBGPU_MODEL_ID });
+
     if (typeof window === "undefined") {
+      log({ level: "error", message: "Run rejected before browser execution", detail: "window is unavailable" });
       return {
         ok: false,
         code: "REQUEST_FAILED",
@@ -45,19 +62,24 @@ export async function runPrompt(prompt: string): Promise<RunPromptResult> {
       };
     }
 
-    if (!("gpu" in navigator)) {
+    const gpu = (navigator as Navigator & { gpu?: unknown }).gpu;
+    if (!gpu) {
+      log({ level: "error", message: "WebGPU unavailable", detail: "navigator.gpu is not present" });
       return {
         ok: false,
         code: "SERVICE_UNAVAILABLE",
         message: "This browser does not expose WebGPU. Sophon is configured to hard-fail instead of using a server fallback."
       };
     }
+    log({ level: "success", message: "WebGPU detected", detail: "navigator.gpu available" });
 
-    const runtime = await getBrowserTraceRuntime();
-    const run = await extractBrowserPromptRun(runtime, prompt);
+    const runtime = await getBrowserTraceRuntime(log);
+    const run = await extractBrowserPromptRun(runtime, prompt, log);
+    log({ level: "success", message: "Trace complete", detail: `${run.layers.length} hidden-state layers / ${run.tokens.length} tokens` });
     return { ok: true, run };
   } catch (error) {
     if (error instanceof PromptTooLongError) {
+      log({ level: "error", message: "Prompt exceeds token cap", detail: `${error.tokenCount} / ${error.maxTokens} tokens` });
       return {
         ok: false,
         code: "PROMPT_TOO_LONG",
@@ -67,6 +89,12 @@ export async function runPrompt(prompt: string): Promise<RunPromptResult> {
       };
     }
 
+    log({
+      level: "error",
+      message: "Browser WebGPU trace failed",
+      detail: error instanceof Error ? error.message : "Unknown runtime error"
+    });
+
     return {
       ok: false,
       code: "REQUEST_FAILED",
@@ -75,21 +103,45 @@ export async function runPrompt(prompt: string): Promise<RunPromptResult> {
   }
 }
 
-async function getBrowserTraceRuntime(): Promise<BrowserTraceRuntime> {
-  runtimePromise ??= loadBrowserTraceRuntime();
+async function getBrowserTraceRuntime(log: (event: RuntimeLogEvent) => void): Promise<BrowserTraceRuntime> {
+  if (runtimePromise) {
+    log({ level: "info", message: "Using cached browser runtime", detail: WEBGPU_MODEL_ID });
+    return runtimePromise;
+  }
+
+  log({ level: "info", message: "Loading tokenizer and ONNX model", detail: WEBGPU_MODEL_ID });
+  runtimePromise = loadBrowserTraceRuntime(log);
   return runtimePromise;
 }
 
-async function loadBrowserTraceRuntime(): Promise<BrowserTraceRuntime> {
+async function loadBrowserTraceRuntime(log: (event: RuntimeLogEvent) => void): Promise<BrowserTraceRuntime> {
   const { AutoModelForCausalLM, AutoTokenizer, env } = await import("@huggingface/transformers");
   env.allowLocalModels = false;
 
+  const progressByFile = new Map<string, number>();
+  const progressCallback = (progress: unknown) => {
+    if (!progress || typeof progress !== "object") return;
+    const event = progress as { status?: string; file?: string; progress?: number; loaded?: number; total?: number };
+    if (event.status !== "progress" || !event.file || typeof event.progress !== "number") return;
+
+    const rounded = Math.floor(event.progress);
+    const previous = progressByFile.get(event.file) ?? -1;
+    if (rounded < 100 && rounded - previous < 20) return;
+    progressByFile.set(event.file, rounded);
+    log({ level: "info", message: "Downloading model asset", detail: `${event.file} ${rounded}%` });
+  };
+
   const [tokenizer, model] = await Promise.all([
-    AutoTokenizer.from_pretrained(WEBGPU_MODEL_ID),
+    AutoTokenizer.from_pretrained(WEBGPU_MODEL_ID, {
+      progress_callback: progressCallback
+    }),
     AutoModelForCausalLM.from_pretrained(WEBGPU_MODEL_ID, {
-      device: "webgpu"
+      device: "webgpu",
+      progress_callback: progressCallback
     })
   ]);
+
+  log({ level: "success", message: "Browser runtime loaded", detail: "tokenizer + ONNX WebGPU session ready" });
 
   return {
     model: model as unknown as CallableModel,
@@ -97,8 +149,14 @@ async function loadBrowserTraceRuntime(): Promise<BrowserTraceRuntime> {
   };
 }
 
-async function extractBrowserPromptRun({ model, tokenizer }: BrowserTraceRuntime, prompt: string): Promise<PromptRun> {
+async function extractBrowserPromptRun(
+  { model, tokenizer }: BrowserTraceRuntime,
+  prompt: string,
+  log: (event: RuntimeLogEvent) => void
+): Promise<PromptRun> {
   const tokenIds = tokenizer.encode(prompt, { add_special_tokens: false });
+  log({ level: "info", message: "Prompt tokenized", detail: `${tokenIds.length} tokens` });
+
   if (tokenIds.length > MAX_PROMPT_TOKENS) {
     throw new PromptTooLongError(tokenIds.length, MAX_PROMPT_TOKENS);
   }
@@ -107,16 +165,22 @@ async function extractBrowserPromptRun({ model, tokenizer }: BrowserTraceRuntime
     add_special_tokens: false,
     return_tensor: true
   });
+  log({ level: "info", message: "Running ONNX inference", detail: "device=webgpu" });
+
   const outputs = await model(inputs);
+  log({ level: "info", message: "Inference returned outputs", detail: Object.keys(outputs).join(", ") || "no output keys" });
+
   const logits = asTensor(outputs.logits, "logits");
   const hiddenStates = tensorArray(outputs.hidden_states ?? outputs.hiddenStates);
 
   if (hiddenStates.length === 0) {
+    log({ level: "error", message: "Missing hidden states", detail: "Model must export hidden_states for Sophon traces" });
     throw new Error(
       `The configured ONNX WebGPU model (${WEBGPU_MODEL_ID}) did not expose hidden_states. ` +
       "Sophon is configured with no server fallback, so use a browser ONNX export that returns layer hidden states."
     );
   }
+  log({ level: "success", message: "Hidden states received", detail: `${hiddenStates.length} tensors` });
 
   const tokens = tokenIds.map((tokenId, index) => {
     const text = tokenizer.decode([tokenId], {
