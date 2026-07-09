@@ -3,12 +3,14 @@
 import {
   ChevronDown,
   ChevronUp,
+  Download,
   LocateFixed,
   Play,
   SquareSigma,
-  SlidersHorizontal
+  SlidersHorizontal,
+  Upload
 } from "lucide-react";
-import { useState } from "react";
+import { ChangeEvent, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -17,6 +19,7 @@ import { Selection, SophonScene } from "@/components/sophon-scene";
 import { PromptDock } from "@/components/prompt-dock";
 import { TokenFooter } from "@/components/token-footer";
 import { MAX_PROMPT_CHARS, MAX_PROMPT_TOKENS, runPrompt } from "@/lib/interp-client";
+import { exportFilename, parseRunFile, serializeRun } from "@/lib/run-file";
 import { MetricMode, PromptRun, metricValue } from "@/lib/prompt-run";
 import { sophonBrandMark, sophonChromeSurface, sophonGridSurface } from "@/lib/sophon-tailwind";
 import { cn } from "@/lib/utils";
@@ -38,6 +41,7 @@ export function SophonWorkbench() {
   const [runMessage, setRunMessage] = useState<string | null>(null);
   const [controlsOpen, setControlsOpen] = useState(false);
   const [detailMode, setDetailMode] = useState<DetailMode>("prediction");
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const run = currentRun;
   const selectedLayer = run ? run.layers[Math.min(selection.layer, run.layers.length - 1)] : null;
@@ -73,6 +77,44 @@ export function SophonWorkbench() {
     }
 
     setIsRunning(false);
+  }
+
+  function exportRun() {
+    if (!run) return;
+    const blob = new Blob([serializeRun(run)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = exportFilename(run);
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  async function handleImportFile(event: ChangeEvent<HTMLInputElement>) {
+    const input = event.target;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file) return;
+    if (currentRun && !window.confirm("Loading a file replaces the current run. Continue?")) {
+      return;
+    }
+
+    const text = await file.text();
+    const result = parseRunFile(text);
+
+    if (result.ok) {
+      setCurrentRun(result.run);
+      setSelectedHead("all");
+      setSelection({
+        layer: Math.min(8, result.run.layers.length - 1),
+        token: Math.max(0, result.run.tokens.length - 1)
+      });
+      setRunMessage(null);
+    } else {
+      setRunMessage(result.error);
+    }
   }
 
   return (
@@ -139,6 +181,32 @@ export function SophonWorkbench() {
             <h2 className="truncate font-serif text-xl font-semibold max-[760px]:text-lg">{run?.title ?? "Run a prompt"}</h2>
           </div>
           <div className="flex shrink-0 gap-2">
+            <input
+              accept="application/json"
+              className="hidden"
+              onChange={handleImportFile}
+              ref={fileInputRef}
+              type="file"
+            />
+            <Button
+              onClick={() => fileInputRef.current?.click()}
+              size="icon"
+              title="Import run"
+              type="button"
+              variant="sophon"
+            >
+              <Upload className="size-4" />
+            </Button>
+            <Button
+              disabled={!run}
+              onClick={exportRun}
+              size="icon"
+              title="Export run"
+              type="button"
+              variant="sophon"
+            >
+              <Download className="size-4" />
+            </Button>
             <Button
               disabled={!run}
               onClick={() => setSelection({ layer: 0, token: 0 })}
