@@ -1,6 +1,6 @@
 import * as React from "react";
 import * as SelectPrimitive from "@radix-ui/react-select";
-import { Check, ChevronDown, ChevronUp } from "lucide-react";
+import { Check, ChevronDown, ChevronUp, ChevronsUpDown } from "lucide-react";
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
@@ -38,7 +38,7 @@ const SelectTrigger = React.forwardRef<
   >
     {children}
     <SelectPrimitive.Icon asChild>
-      <ChevronDown className="size-4 opacity-50" />
+      <ChevronsUpDown className="size-3.5 opacity-50" />
     </SelectPrimitive.Icon>
   </SelectPrimitive.Trigger>
 ));

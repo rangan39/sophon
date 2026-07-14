@@ -1,48 +1,50 @@
-import type { RunPromptOptions, RunPromptResult, RuntimeLogEvent } from "@/lib/trace-types";
+import type { OnnxLogEvent, OnnxRunOptions, OnnxRunResponse } from "@/lib/onnx-types";
 
 export { MAX_PROMPT_CHARS, MAX_PROMPT_TOKENS } from "@/lib/trace-config";
-export type { RunPromptOptions, RunPromptResult, RuntimeLogEvent, RuntimeLogLevel } from "@/lib/trace-types";
+export type { OnnxLogEvent as RuntimeLogEvent, OnnxRunResponse as RunPromptResult } from "@/lib/onnx-types";
 
 type TraceWorkerRequest = {
   type: "run";
   id: number;
   prompt: string;
+  modelId?: string;
+  options?: Pick<OnnxRunOptions, "maxNewTokens" | "temperature">;
 };
 
 type TraceWorkerResponse =
   | {
       type: "log";
       id: number;
-      event: RuntimeLogEvent;
+      event: OnnxLogEvent;
     }
   | {
       type: "complete";
       id: number;
-      result: RunPromptResult;
+      result: OnnxRunResponse;
     };
 
 let workerRunId = 0;
 
-export async function runPrompt(prompt: string, options: RunPromptOptions = {}): Promise<RunPromptResult> {
+export async function runPrompt(prompt: string, options: OnnxRunOptions = {}): Promise<OnnxRunResponse> {
   if (typeof window === "undefined" || typeof Worker === "undefined") {
-    const { runPromptDirect } = await import("@/lib/trace-runtime");
-    return runPromptDirect(prompt, options);
+    const { runOnnxTextModel } = await import("@/lib/onnx-runner");
+    return runOnnxTextModel(prompt, options);
   }
 
   return runPromptInWorker(prompt, options);
 }
 
-function runPromptInWorker(prompt: string, options: RunPromptOptions): Promise<RunPromptResult> {
+function runPromptInWorker(prompt: string, options: OnnxRunOptions): Promise<OnnxRunResponse> {
   const id = workerRunId + 1;
   workerRunId = id;
-  const worker = new Worker(new URL("../workers/trace-worker.ts", import.meta.url), {
+  const worker = new Worker(new URL("../workers/onnx-worker.ts", import.meta.url), {
     type: "module"
   });
 
   return new Promise((resolve) => {
     let settled = false;
 
-    function finish(result: RunPromptResult) {
+    function finish(result: OnnxRunResponse) {
       if (settled) return;
       settled = true;
       worker.terminate();
@@ -75,6 +77,15 @@ function runPromptInWorker(prompt: string, options: RunPromptOptions): Promise<R
       });
     };
 
-    worker.postMessage({ type: "run", id, prompt } satisfies TraceWorkerRequest);
+    worker.postMessage({
+      type: "run",
+      id,
+      prompt,
+      modelId: options.modelId,
+      options: {
+        maxNewTokens: options.maxNewTokens,
+        temperature: options.temperature
+      }
+    } satisfies TraceWorkerRequest);
   });
 }

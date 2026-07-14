@@ -1,111 +1,89 @@
 # Sophon
 
-Sophon is a browser-based mechanistic interpretability visualization workbench.
+Sophon is a browser-based local AI chat tool. It runs ONNX language models in a Web Worker with WebGPU, so prompts can stay on the device instead of traveling to a server.
 
-The current MVP is a Next.js + React Three Fiber app that shows how transformer internals could be explored across prompt types, tokens, layers, attention paths, and feature-like activations.
+Production app: [sophon-coral.vercel.app](https://sophon-coral.vercel.app)
 
-## What It Shows
+## What it does
 
-- A 3D layer-by-token grid for transformer-style activations
-- Prompt input backed by a browser ONNX WebGPU runtime
-- Metric modes for hidden-state signal summaries
-- Attention-style arcs between tokens
-- A side inspector for selected token/layer details
-- SAE-style feature labels and activation values
+- Chats with a local ONNX model directly in the browser
+- Uses WebGPU through ONNX Runtime Web
+- Keeps model loading and inference off the main UI thread
+- Loads additional models lazily through the model registry
+- Shows model, runtime, and generation status in a compact HUD-style interface
+- Supports local Tiny GPT-2 assets and remote Transformers.js-compatible ONNX models
 
-## Important Note
+## Stack
 
-Sophon is configured to hard-fail when browser WebGPU is unavailable. There is no server fallback in the frontend path.
+- Next.js 14 App Router
+- React 18 and TypeScript
+- shadcn-style UI primitives
+- ONNX Runtime Web
+- Transformers.js
+- WebGPU
+- Vercel
 
-The browser runtime requires an ONNX/WebGPU model export that exposes hidden states. Set `NEXT_PUBLIC_SOPHON_WEBGPU_MODEL` to the Hugging Face model id for that export. If the configured model only exposes logits, Sophon fails instead of fabricating trace measurements.
-
-SAE feature labels are still placeholders. Real SAE integration is a later step.
-
-## Tech Stack
-
-- Next.js
-- TypeScript
-- React
-- Three.js
-- React Three Fiber
-- Drei
-- Lucide icons
-- ONNX Runtime WebGPU through Transformers.js
-
-## Getting Started
-
-Install dependencies:
+## Run locally
 
 ```bash
 npm install
-```
-
-Run the local dev server:
-
-```bash
 npm run dev
 ```
 
-Open:
+Open [http://localhost:3000](http://localhost:3000).
 
-```txt
-http://localhost:3000
-```
-
-Build for production:
+Build and validate the production bundle:
 
 ```bash
 npm run build
+npm run lint
 ```
 
-Optional browser model override:
+WebGPU works best in a recent Chromium-based browser. The first run may download and cache the selected model.
 
-```bash
-NEXT_PUBLIC_SOPHON_WEBGPU_MODEL=your-org/your-gpt2-hidden-states-onnx npm run dev
+## Model architecture
+
+Models are defined in [`src/lib/onnx-models.ts`](src/lib/onnx-models.ts). The registry keeps model metadata separate from the chat UI and supports lazy selection:
+
+```text
+Model registry → model adapter → Web Worker → ONNX Runtime/WebGPU → chat UI
 ```
 
-## Project Structure
+The current registry includes:
 
-```txt
-src/app/
-  App routes, layout, and global styles
+- Tiny GPT-2 — bundled local starter model
+- SmolLM2 135M and 360M — small instruction models
+- Qwen2.5 Coder 0.5B — coding-focused model
+- Llama 3.2 1B — general-purpose model
+- Qwen3 1.7B — larger chat model
 
-src/components/
-  Sophon workbench and 3D visualization UI
+Remote entries require compatible ONNX weights hosted in a Transformers.js-compatible repository. Larger models need more GPU memory and can take longer to download.
 
-src/lib/
-  Shared prompt-run types and frontend API client
+## Local model assets
 
-services/interp-api/
-  Legacy/research TransformerLens API scaffold
+The bundled preset lives under:
+
+```text
+public/models/sshleifer-tiny-gpt2-trace/
+  onnx/model.onnx
+  tokenizer.json
+  tokenizer_config.json
+  sophon-trace.json
 ```
 
-## Legacy TransformerLens Backend
+The local adapter expects causal language model inputs named `input_ids` and `attention_mask`, with a `logits` output. Remote models are loaded through the Transformers.js adapter instead.
 
-`services/interp-api/` remains in the repo for research comparison and future export work. The frontend no longer calls it.
+## Project layout
 
-## Mechanistic Interpretability Concepts
-
-Sophon visualizes a few core ideas:
-
-- **Tokens**: pieces of the prompt processed by the model
-- **Layers**: repeated transformer blocks that update token representations
-- **Hidden states**: model representations emitted by the browser ONNX export
-- **Attention**: how one token reads information from another token
-- **SAE features**: interpretable feature-like directions learned from activations
-
-## Roadmap
-
-- Load real Neuronpedia export files
-- Add prompt-run JSON import/export
-- Add a custom ONNX export with hidden states and attention tensors
-- Add activation patching views
-- Add side-by-side clean/corrupt prompt comparison
-- Add real attribution data
-- Add saved analysis sessions
-
-## Repository
-
-```txt
-https://github.com/rangan39/sophon
+```text
+src/components/sophon-workbench.tsx  Chat/HUD interface
+src/components/ui/                    shadcn-style primitives
+src/lib/onnx-models.ts                 Model registry
+src/lib/onnx-runner.ts                 Local and remote adapters
+src/workers/onnx-worker.ts             Background inference worker
+public/models/                         Bundled model assets
 ```
+
+## Limitations
+
+WebGPU support and ONNX operator coverage vary by browser and device. Model downloads are client-side, and the app currently reports runtime failures rather than falling back to a server inference provider.
