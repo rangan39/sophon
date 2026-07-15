@@ -1,7 +1,7 @@
 "use client";
 
-import { FormEvent, KeyboardEvent, useState } from "react";
-import { CircleUserRound, LoaderCircle, Menu, MessageSquareText, PanelLeft, Plus, SendHorizontal } from "lucide-react";
+import { FormEvent, KeyboardEvent, useEffect, useState } from "react";
+import { Activity, CircleUserRound, Gauge, LoaderCircle, MessageSquareText, PanelLeft, Plus, SendHorizontal } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -11,7 +11,8 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { DEFAULT_ONNX_MODEL, MODEL_REGISTRY } from "@/lib/onnx-models";
-import { MAX_PROMPT_CHARS, runPrompt } from "@/lib/interp-client";
+import { getCapabilities, MAX_PROMPT_CHARS, runBenchmark, runPrompt, unloadModel } from "@/lib/interp-client";
+import type { BenchmarkResult, RuntimeCapabilities } from "@/lib/onnx-types";
 
 type ChatMessage = {
   id: number;
@@ -39,14 +40,42 @@ export function SophonWorkbench() {
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [modelId, setModelId] = useState(DEFAULT_ONNX_MODEL.id);
+  const [capabilities, setCapabilities] = useState<RuntimeCapabilities | null>(null);
+  const [benchmark, setBenchmark] = useState<BenchmarkResult | null>(null);
+  const [isBenchmarking, setIsBenchmarking] = useState(false);
   const selectedModel = MODEL_REGISTRY.find((model) => model.id === modelId) ?? DEFAULT_ONNX_MODEL;
 
   const canSend = prompt.trim().length > 0 && !isRunning;
+
+  useEffect(() => {
+    void getCapabilities().then(setCapabilities).catch(() => setCapabilities({ webgpu: false, wasm: true, crossOriginIsolated: false }));
+  }, []);
 
   function resetChat() {
     setMessages(starterMessages);
     setPrompt("");
     setError(null);
+  }
+
+  function selectModel(nextModelId: string) {
+    if (nextModelId !== modelId) void unloadModel();
+    setModelId(nextModelId);
+    setBenchmark(null);
+    setError(null);
+  }
+
+  async function executeBenchmark() {
+    if (isBenchmarking || isRunning) return;
+    setIsBenchmarking(true);
+    setBenchmark(null);
+    setError(null);
+    try {
+      setBenchmark(await runBenchmark(modelId, { measuredRuns: 3 }));
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "The benchmark failed.");
+    } finally {
+      setIsBenchmarking(false);
+    }
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -79,7 +108,7 @@ export function SophonWorkbench() {
           id: Date.now() + 1,
           role: "assistant",
           content: response.result.generatedText || "The model returned an empty response.",
-          meta: `${response.result.tokensPerSecond.toFixed(1)} tok/s · ${response.result.elapsedMs} ms`,
+          meta: `${response.result.metrics.provider} · ${response.result.inputTokenCount}→${response.result.outputTokenCount} tok · ${response.result.tokensPerSecond.toFixed(1)} tok/s · ${Math.round(response.result.elapsedMs)} ms`,
         },
       ]);
     } catch (caught) {
@@ -104,18 +133,18 @@ export function SophonWorkbench() {
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <div className="hidden items-center gap-2 font-mono text-[10px] uppercase tracking-widest text-[#7df0a8] sm:flex"><span className="size-1.5 rounded-full bg-[#7df0a8] shadow-[0_0_10px_#7df0a8]" />WebGPU online</div>
-            <Select disabled={isRunning} onValueChange={setModelId} value={modelId}>
+            <div className="hidden items-center gap-2 font-mono text-[10px] uppercase tracking-widest text-[#7df0a8] sm:flex"><span className="size-1.5 rounded-full bg-[#7df0a8] shadow-[0_0_10px_#7df0a8]" />{capabilities ? capabilities.webgpu ? "WebGPU online" : capabilities.wasm ? "WASM fallback" : "No runtime" : "Probing runtime"}</div>
+            <Select disabled={isRunning || isBenchmarking} onValueChange={selectModel} value={modelId}>
             <SelectTrigger aria-label="Choose model" className="h-7 w-[132px] border-white/[.12] bg-white/[.045] px-2 font-mono text-[9px] uppercase tracking-wide text-white/75 shadow-none hover:border-[#ff694b]/50 sm:w-[150px]"><SelectValue /></SelectTrigger>
             <SelectContent>
-              {MODEL_REGISTRY.map((model) => <SelectItem key={model.id} value={model.id}><span className="flex items-center justify-between gap-5"><span>{model.label}</span><span className="text-[10px] text-muted-foreground">{model.sizeLabel}</span></span></SelectItem>)}
+              {MODEL_REGISTRY.map((model) => <SelectItem key={model.id} value={model.id}><span className="flex items-center justify-between gap-5"><span>{model.label}</span><span className="text-[10px] text-muted-foreground">{model.verification === "verified" ? "verified" : "experimental"} · {model.format.sizeLabel}</span></span></SelectItem>)}
             </SelectContent>
             </Select>
           </div>
         </header>
 
         <div className="grid min-h-0 flex-1 grid-cols-[250px_minmax(0,1fr)] max-[700px]:grid-cols-1">
-          <aside className="border-r border-white/[.08] bg-[#0a0b0e]/70 p-4 max-[700px]:hidden">
+          <aside className="flex flex-col border-r border-white/[.08] bg-[#0a0b0e]/70 p-4 max-[700px]:hidden">
             <Button className="h-11 w-full justify-start gap-2 border-white/[.12] bg-white/[.045] font-mono text-xs text-white hover:border-[#ff694b]/50 hover:bg-[#ff4d2e]/10" onClick={resetChat} variant="outline"><Plus className="size-4 text-[#ff795d]" />New session <span className="ml-auto text-[10px] text-white/25">⌘ N</span></Button>
             <div className="mt-9 flex items-center justify-between px-2 font-mono text-[10px] uppercase tracking-[0.2em] text-white/35"><span>Sessions</span><span className="text-white/20">01</span></div>
             <div className="mt-3 rounded-md border border-[#ff694b]/25 bg-[#ff4d2e]/[.08] px-3 py-3 shadow-[inset_3px_0_0_#ff4d2e]">
@@ -123,10 +152,12 @@ export function SophonWorkbench() {
               <p className="mt-1 pl-3.5 text-[11px] text-white/35">Active now</p>
             </div>
             <Card className="mt-auto hidden border-white/[.08] bg-white/[.025] p-3 text-xs leading-5 text-white/45 min-[701px]:block">
-              <div className="mb-3 flex items-center gap-2 font-mono text-[10px] uppercase tracking-widest text-white/60"><span className="size-1.5 rounded-full bg-[#7df0a8]" />Device runtime</div>
+              <div className="mb-3 flex items-center justify-between gap-2 font-mono text-[10px] uppercase tracking-widest text-white/60"><span className="flex items-center gap-2"><Activity className="size-3 text-[#7df0a8]" />Device runtime</span><span className={selectedModel.verification === "verified" ? "text-[#7df0a8]" : "text-[#ffc857]"}>{selectedModel.verification}</span></div>
               <p className="font-medium text-white/80">{selectedModel.label}</p>
               <p className="mt-1">{selectedModel.description}</p>
-              <div className="mt-3 flex justify-between border-t border-white/[.08] pt-3 font-mono text-[10px] uppercase text-white/30"><span>Provider</span><span className="text-[#7df0a8]">WebGPU</span></div>
+              <div className="mt-3 grid grid-cols-2 gap-2 border-t border-white/[.08] pt-3 font-mono text-[10px] uppercase text-white/30"><span>Graph</span><span className="text-right text-white/50">{selectedModel.graph.generation}</span><span>Provider</span><span className="text-right text-[#7df0a8]">{capabilities?.webgpu && selectedModel.providers.includes("webgpu") ? "WebGPU" : selectedModel.providers.includes("wasm") ? "WASM" : "Unavailable"}</span></div>
+              <Button className="mt-3 h-8 w-full gap-2 border-white/[.1] bg-white/[.035] font-mono text-[10px] uppercase tracking-wider text-white/65 hover:border-[#ff694b]/40 hover:bg-[#ff4d2e]/10" disabled={isBenchmarking || isRunning} onClick={executeBenchmark} variant="outline"><Gauge className="size-3.5" />{isBenchmarking ? "Benchmarking" : "Run benchmark"}</Button>
+              {benchmark ? <div className="mt-3 border-t border-white/[.08] pt-3 font-mono text-[10px] uppercase tracking-wider"><div className="flex justify-between"><span>Median</span><span className="text-white/70">{benchmark.summary.medianTokensPerSecond?.toFixed(1) ?? "—"} tok/s</span></div><div className="mt-1 flex justify-between"><span>Runs</span><span className={benchmark.summary.failedRuns ? "text-[#ffc857]" : "text-[#7df0a8]"}>{benchmark.summary.successfulRuns}/{benchmark.runs.length} passed</span></div></div> : null}
             </Card>
           </aside>
 
@@ -135,7 +166,7 @@ export function SophonWorkbench() {
               <div className="mx-auto flex w-full max-w-6xl flex-col gap-8 px-4 py-4 sm:px-12 sm:py-7">
                 <div>
                   <div className="mb-3 flex items-center justify-between border-b border-white/[.08] pb-3 font-mono text-[10px] uppercase tracking-[0.2em] text-white/35"><span>Transmission log</span><span className="text-[#7df0a8]">Channel open</span></div>
-                  <div className="flex items-center justify-between gap-5"><div><h2 className="font-mono text-xs font-medium uppercase tracking-[0.22em] text-white/70">Conversation buffer</h2><p className="mt-2 font-mono text-[10px] uppercase tracking-wider text-white/25">{selectedModel.family} / {selectedModel.label} / WebGPU</p></div><div className="hidden size-12 items-center justify-center rounded-md border border-[#ff694b]/20 bg-[#ff4d2e]/[.04] text-[#ff795d] sm:flex"><MessageSquareText className="size-5" /></div></div>
+                  <div className="flex items-center justify-between gap-5"><div><h2 className="font-mono text-xs font-medium uppercase tracking-[0.22em] text-white/70">Conversation buffer</h2><p className="mt-2 font-mono text-[10px] uppercase tracking-wider text-white/25">{selectedModel.family} / {selectedModel.label} / {selectedModel.verification}</p></div><div className="hidden size-12 items-center justify-center rounded-md border border-[#ff694b]/20 bg-[#ff4d2e]/[.04] text-[#ff795d] sm:flex"><MessageSquareText className="size-5" /></div></div>
                 </div>
 
                 <div className="mt-3 space-y-6">
@@ -162,7 +193,7 @@ export function SophonWorkbench() {
                 {error ? <div className="mb-3 rounded-md border border-[#ff5f63]/30 bg-[#ff5f63]/10 px-3 py-2 text-sm text-[#ff9a9d]">{error}</div> : null}
                 <div className="relative rounded-md border border-white/[.14] bg-[#111319] shadow-[0_15px_60px_rgb(0_0_0/.28)] transition-colors focus-within:border-[#ff694b]/60 focus-within:shadow-[0_0_0_3px_rgb(255_77_46/.1),0_15px_60px_rgb(0_0_0/.28)]">
                   <Textarea aria-label="Message Sophon" className="min-h-24 resize-none border-0 bg-transparent pr-14 text-[15px] leading-6 text-white shadow-none placeholder:text-white/25 focus-visible:ring-0" maxLength={MAX_PROMPT_CHARS} onChange={(event) => setPrompt(event.target.value)} onKeyDown={handleKeyDown} placeholder="Ask the local model anything..." value={prompt} />
-                  <div className="flex items-center justify-between border-t border-white/[.07] px-3 py-2"><span className="font-mono text-[10px] uppercase tracking-widest text-white/25">{selectedModel.family} · {selectedModel.sizeLabel}</span><Button aria-label="Send message" className="size-8 rounded-lg bg-[#ff4d2e] text-[#210b07] shadow-[0_0_20px_rgb(255_77_46/.2)] hover:bg-[#ff694b]" disabled={!canSend} size="icon" type="submit"><SendHorizontal className="size-4" /></Button></div>
+                  <div className="flex items-center justify-between border-t border-white/[.07] px-3 py-2"><span className="font-mono text-[10px] uppercase tracking-widest text-white/25">{selectedModel.family} · {selectedModel.format.quantization} · {selectedModel.format.sizeLabel}</span><Button aria-label="Send message" className="size-8 rounded-lg bg-[#ff4d2e] text-[#210b07] shadow-[0_0_20px_rgb(255_77_46/.2)] hover:bg-[#ff694b]" disabled={!canSend || isBenchmarking} size="icon" type="submit"><SendHorizontal className="size-4" /></Button></div>
                 </div>
                 <div className="mt-3 flex justify-between px-1 font-mono text-[10px] uppercase tracking-wider text-white/25"><span>Enter to send · Shift + Enter for newline</span><span>{prompt.length}/{MAX_PROMPT_CHARS}</span></div>
               </form>

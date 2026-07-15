@@ -33,8 +33,8 @@ try {
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
 
   console.log(`Running prompt: ${JSON.stringify(prompt)}`);
-  await page.getByPlaceholder("Enter a prompt").fill(prompt);
-  await page.getByRole("button", { name: "Run prompt" }).click();
+  await page.getByPlaceholder("Ask the local model anything...").fill(prompt);
+  await page.getByRole("button", { name: "Send message" }).click();
 
   const result = await waitForPromptResult(page, prompt, timeoutMs);
   console.log(result);
@@ -54,20 +54,19 @@ try {
 
 async function waitForPromptResult(page, prompt, timeoutMs) {
   const startedAt = Date.now();
-  const promptTitle = page.locator("header h2").filter({ hasText: prompt });
+  const userMessage = page.getByText(prompt, { exact: true });
+  const metrics = page.getByText(/\d+(?:\.\d+)? tok\/s/).last();
   const knownFailurePatterns = [
-    /Hidden state token count/i,
-    /Browser WebGPU trace failed/i,
     /WebGPU unavailable/i,
-    /did not expose hidden_states/i,
-    /Trace worker failed/i,
-    /REQUEST_FAILED/i
+    /model worker failed/i,
+    /requires webgpu/i,
+    /Inference failed/i
   ];
 
   while (Date.now() - startedAt < timeoutMs) {
-    if (await promptTitle.isVisible().catch(() => false)) {
-      const tokenFooter = await page.locator("footer, [data-slot='token-footer']").textContent().catch(() => null);
-      return `Prompt run completed for ${JSON.stringify(prompt)}.${tokenFooter ? `\n${tokenFooter.trim()}` : ""}`;
+    if (await userMessage.isVisible().catch(() => false) && await metrics.isVisible().catch(() => false)) {
+      const metricText = await metrics.textContent();
+      return `Prompt run completed for ${JSON.stringify(prompt)}.${metricText ? `\n${metricText.trim()}` : ""}`;
     }
 
     const bodyText = await page.locator("body").textContent().catch(() => "");
