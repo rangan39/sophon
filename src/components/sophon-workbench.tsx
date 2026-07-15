@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, KeyboardEvent, useEffect, useState } from "react";
+import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
 import { Activity, CircleUserRound, Gauge, LoaderCircle, MessageSquareText, PanelLeft, Plus, SendHorizontal } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,7 @@ import { Message, MessageAvatar, MessageContent } from "@/components/ui/message"
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { DEFAULT_ONNX_MODEL, MODEL_REGISTRY } from "@/lib/onnx-models";
 import { getCapabilities, runBenchmark, runPrompt, unloadModel } from "@/lib/interp-client";
@@ -23,6 +24,10 @@ type ChatMessage = {
 
 function GreekGlyph({ children, className = "" }: { children: string; className?: string }) {
   return <span aria-hidden="true" className={`font-serif text-base leading-none ${className}`}>{children}</span>;
+}
+
+function MetricKpi({ label, value, unit }: { label: string; value: string; unit?: string }) {
+  return <div className="border border-white/[.08] bg-black/20 px-2.5 py-2"><p className="font-mono text-[8px] uppercase tracking-[0.16em] text-white/30">{label}</p><p className="mt-1 font-mono text-sm tabular-nums text-white/80">{value}{unit ? <span className="ml-1 text-[8px] uppercase text-white/30">{unit}</span> : null}</p></div>;
 }
 
 const starterMessages: ChatMessage[] = [
@@ -43,13 +48,37 @@ export function SophonWorkbench() {
   const [capabilities, setCapabilities] = useState<RuntimeCapabilities | null>(null);
   const [benchmark, setBenchmark] = useState<BenchmarkResult | null>(null);
   const [isBenchmarking, setIsBenchmarking] = useState(false);
+  const [autoBenchmark, setAutoBenchmark] = useState(true);
+  const benchmarkedModelRef = useRef<string | null>(null);
   const selectedModel = MODEL_REGISTRY.find((model) => model.id === modelId) ?? DEFAULT_ONNX_MODEL;
 
-  const canSend = prompt.trim().length > 0 && !isRunning;
+  const canSend = prompt.trim().length > 0 && !isRunning && !isBenchmarking;
 
   useEffect(() => {
     void getCapabilities().then(setCapabilities).catch(() => setCapabilities({ webgpu: false, wasm: true, crossOriginIsolated: false }));
   }, []);
+
+  useEffect(() => {
+    if (!autoBenchmark || !capabilities || benchmarkedModelRef.current === modelId) return;
+    benchmarkedModelRef.current = modelId;
+    let active = true;
+    setIsBenchmarking(true);
+    setBenchmark(null);
+    setError(null);
+    void runBenchmark(modelId, { measuredRuns: 3 })
+      .then((result) => {
+        if (active) setBenchmark(result);
+      })
+      .catch((caught) => {
+        if (active) setError(caught instanceof Error ? caught.message : "The benchmark failed.");
+      })
+      .finally(() => {
+        if (active) setIsBenchmarking(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [autoBenchmark, capabilities, modelId]);
 
   function resetChat() {
     setMessages(starterMessages);
@@ -64,20 +93,6 @@ export function SophonWorkbench() {
     setError(null);
   }
 
-  async function executeBenchmark() {
-    if (isBenchmarking || isRunning) return;
-    setIsBenchmarking(true);
-    setBenchmark(null);
-    setError(null);
-    try {
-      setBenchmark(await runBenchmark(modelId, { measuredRuns: 3 }));
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "The benchmark failed.");
-    } finally {
-      setIsBenchmarking(false);
-    }
-  }
-
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
@@ -88,7 +103,7 @@ export function SophonWorkbench() {
   async function submitPrompt(event?: FormEvent) {
     event?.preventDefault();
     const text = prompt.trim();
-    if (!text || isRunning) return;
+    if (!text || isRunning || isBenchmarking) return;
 
     setPrompt("");
     setError(null);
@@ -156,8 +171,8 @@ export function SophonWorkbench() {
               <p className="font-medium text-white/80">{selectedModel.label}</p>
               <p className="mt-1">{selectedModel.description}</p>
               <div className="mt-3 grid grid-cols-2 gap-2 border-t border-white/[.08] pt-3 font-mono text-[10px] uppercase text-white/30"><span>Graph</span><span className="text-right text-white/50">{selectedModel.graph.generation}</span><span>Provider</span><span className="text-right text-[#7df0a8]">{capabilities?.webgpu && selectedModel.providers.includes("webgpu") ? "WebGPU" : selectedModel.providers.includes("wasm") ? "WASM" : "Unavailable"}</span></div>
-              <Button className="mt-3 h-8 w-full gap-2 border-white/[.1] bg-white/[.035] font-mono text-[10px] uppercase tracking-wider text-white/65 hover:border-[#ff694b]/40 hover:bg-[#ff4d2e]/10" disabled={isBenchmarking || isRunning} onClick={executeBenchmark} variant="outline"><Gauge className="size-3.5" />{isBenchmarking ? "Benchmarking" : "Run benchmark"}</Button>
-              {benchmark ? <div className="mt-3 border-t border-white/[.08] pt-3 font-mono text-[10px] uppercase tracking-wider"><div className="flex justify-between"><span>Median</span><span className="text-white/70">{benchmark.summary.medianTokensPerSecond?.toFixed(1) ?? "—"} tok/s</span></div><div className="mt-1 flex justify-between"><span>Runs</span><span className={benchmark.summary.failedRuns ? "text-[#ffc857]" : "text-[#7df0a8]"}>{benchmark.summary.successfulRuns}/{benchmark.runs.length} passed</span></div></div> : null}
+              <div className="mt-3 flex items-center justify-between border-t border-white/[.08] pt-3"><span className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-wider text-white/60"><Gauge className={isBenchmarking ? "size-3.5 animate-pulse text-[#ffc857]" : "size-3.5 text-[#ff795d]"} />{isBenchmarking ? "Benchmarking" : "Auto benchmark"}</span><Switch aria-label="Automatically benchmark the selected model" checked={autoBenchmark} disabled={isBenchmarking} onCheckedChange={(checked) => { benchmarkedModelRef.current = checked ? null : benchmarkedModelRef.current; setAutoBenchmark(checked); }} /></div>
+              {autoBenchmark ? <div className="mt-3 grid grid-cols-2 gap-1.5"><MetricKpi label="Throughput" unit="tok/s" value={isBenchmarking ? "···" : benchmark?.summary.medianTokensPerSecond?.toFixed(1) ?? "—"} /><MetricKpi label="Generation" unit="ms" value={isBenchmarking ? "···" : benchmark?.summary.medianGenerationMs?.toFixed(0) ?? "—"} /><MetricKpi label="First token" unit="ms" value={isBenchmarking ? "···" : benchmark?.summary.medianFirstTokenMs?.toFixed(0) ?? "—"} /><MetricKpi label="Pass rate" value={isBenchmarking ? "···" : benchmark ? `${benchmark.summary.successfulRuns}/${benchmark.runs.length}` : "—"} /></div> : null}
             </Card>
           </aside>
 

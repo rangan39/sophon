@@ -12,7 +12,7 @@ Production app: [sophon-coral.vercel.app](https://sophon-coral.vercel.app)
 - Loads additional models lazily through a strict model registry
 - Shows model, runtime, and generation status in a compact HUD-style interface
 - Supports local Tiny GPT-2 assets and remote Transformers.js-compatible ONNX models
-- Runs a deterministic quick benchmark with tokenizer-derived metrics
+- Automatically runs a deterministic quick benchmark with tokenizer-derived metrics; the runtime-panel toggle is on by default
 
 ## Stack
 

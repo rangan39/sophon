@@ -52,7 +52,7 @@ Remote pipeline first-token latency remains `null` until token streaming is wire
 
 ## Benchmarks
 
-The quick benchmark uses fixed prompts, one warm-up run per prompt, deterministic greedy decoding, and three measured runs per prompt. The UI reports medians and the number of successful runs. This is intended for comparing models on one device, not for claiming results across machines.
+The quick benchmark uses fixed prompts, one warm-up run per prompt, deterministic greedy decoding, and three measured runs per prompt. Auto benchmark is enabled by default and runs once whenever a model becomes active; it can be disabled from the runtime panel. The UI reports medians and the number of successful runs. This is intended for comparing models on one device, not for claiming results across machines.
 
 ## Next technical milestones
 
