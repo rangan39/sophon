@@ -9,9 +9,10 @@ Production app: [sophon-coral.vercel.app](https://sophon-coral.vercel.app)
 - Chats with a local ONNX model directly in the browser
 - Uses WebGPU through ONNX Runtime Web
 - Keeps model loading and inference off the main UI thread
-- Loads additional models lazily through the model registry
+- Loads additional models lazily through a strict model registry
 - Shows model, runtime, and generation status in a compact HUD-style interface
 - Supports local Tiny GPT-2 assets and remote Transformers.js-compatible ONNX models
+- Runs a deterministic quick benchmark with tokenizer-derived metrics
 
 ## Stack
 
@@ -43,10 +44,10 @@ WebGPU works best in a recent Chromium-based browser. The first run may download
 
 ## Model architecture
 
-Models are defined in [`src/lib/onnx-models.ts`](src/lib/onnx-models.ts). The registry keeps model metadata separate from the chat UI and supports lazy selection:
+Models are defined in [`src/lib/onnx-models.ts`](src/lib/onnx-models.ts). The registry records graph strategy, provider support, quantization, source revision, and verification status:
 
 ```text
-Model registry → model adapter → Web Worker → ONNX Runtime/WebGPU → chat UI
+Model manifest → persistent Web Worker → model adapter → ONNX Runtime provider → chat/benchmark UI
 ```
 
 The current registry includes:
@@ -57,7 +58,7 @@ The current registry includes:
 - Llama 3.2 1B — general-purpose model
 - Qwen3 1.7B — larger chat model
 
-Remote entries require compatible ONNX weights hosted in a Transformers.js-compatible repository. Larger models need more GPU memory and can take longer to download.
+Tiny GPT-2 is currently the only `verified` entry. Remote entries are explicitly marked `experimental`; they require compatible ONNX weights hosted in a Transformers.js-compatible repository and may fail on a particular browser or device.
 
 ## Local model assets
 
@@ -87,3 +88,5 @@ public/models/                         Bundled model assets
 ## Limitations
 
 WebGPU support and ONNX operator coverage vary by browser and device. Model downloads are client-side, and the app currently reports runtime failures rather than falling back to a server inference provider.
+
+The native Tiny GPT-2 adapter is a full-context correctness baseline and does not use a KV cache. Remote pipelines may use architecture-specific caching internally. See [`docs/architecture.md`](docs/architecture.md) for support semantics, metric definitions, and the next implementation milestones.
