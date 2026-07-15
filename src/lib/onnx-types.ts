@@ -41,6 +41,9 @@ export type GenerationMetrics = {
   modelLoadMs: number;
   generationMs: number;
   firstTokenMs: number | null;
+  promptTokenCount: number;
+  contextTokenCount: number;
+  truncatedInputTokens: number;
   inputTokenCount: number;
   outputTokenCount: number;
   tokensPerSecond: number;

@@ -189,17 +189,17 @@ async function runLocalModel(prompt: string, model: ModelManifest, options: Onnx
     const provider = resolveProvider(model);
     const runtime = await getLocalRuntime(model, log);
     const modelLoadMs = performance.now() - loadStartedAt;
-    const promptTokenIds = runtime.tokenizer.encode(prompt, { add_special_tokens: false });
-    log({ level: "info", message: "Prompt tokenized", detail: `${promptTokenIds.length} input tokens`, phase: "tokenize" });
-
-    if (promptTokenIds.length >= runtime.sequenceLength) {
-      return {
-        ok: false,
-        code: "PROMPT_TOO_LONG",
-        message: `This model accepts at most ${runtime.sequenceLength - 1} prompt tokens.`,
-        tokenCount: promptTokenIds.length,
-        maxTokens: runtime.sequenceLength - 1
-      };
+    const allPromptTokenIds = runtime.tokenizer.encode(prompt, { add_special_tokens: false });
+    const promptTokenIds = allPromptTokenIds.slice(-runtime.sequenceLength);
+    const truncatedInputTokens = allPromptTokenIds.length - promptTokenIds.length;
+    log({ level: "info", message: "Prompt tokenized", detail: `${allPromptTokenIds.length} prompt tokens · ${promptTokenIds.length} in active context`, phase: "tokenize" });
+    if (truncatedInputTokens > 0) {
+      log({
+        level: "warning",
+        message: "Prompt windowed",
+        detail: `${truncatedInputTokens} earliest token${truncatedInputTokens === 1 ? "" : "s"} omitted; the model received the most recent ${promptTokenIds.length}.`,
+        phase: "tokenize"
+      });
     }
 
     const generationStartedAt = performance.now();
@@ -254,6 +254,9 @@ async function runLocalModel(prompt: string, model: ModelManifest, options: Onnx
         modelLoadMs,
         generationMs,
         firstTokenMs,
+        promptTokenCount: allPromptTokenIds.length,
+        contextTokenCount: promptTokenIds.length,
+        truncatedInputTokens,
         inputTokenCount: promptTokenIds.length,
         outputTokenCount: generatedTokens.length,
         tokensPerSecond
@@ -318,6 +321,9 @@ async function runTransformersJsModel(prompt: string, model: ModelManifest, opti
         modelLoadMs,
         generationMs,
         firstTokenMs: null,
+        promptTokenCount: inputTokenIds.length,
+        contextTokenCount: inputTokenIds.length,
+        truncatedInputTokens: 0,
         inputTokenCount: inputTokenIds.length,
         outputTokenCount: outputTokenIds.length,
         tokensPerSecond

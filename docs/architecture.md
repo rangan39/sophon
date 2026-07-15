@@ -27,6 +27,8 @@ Only verified entries should be treated as supported. Experimental entries are a
 
 The bundled Tiny GPT-2 model uses `input_ids` and `attention_mask` and returns `logits`. It recomputes the active context for each generated token. This is a useful correctness baseline but is not suitable for scaling to larger models.
 
+The UI accepts prompts of arbitrary length. Because the bundled graph has a fixed 64-token context, the adapter applies a sliding window and sends the most recent 64 tokens. Results report the original prompt token count, active context count, and number of omitted earlier tokens.
+
 ### Transformers.js
 
 Experimental remote models use the Transformers.js text-generation pipeline. The pipeline owns architecture-specific generation and KV-cache handling. Sophon requires access to the pipeline tokenizer so input and output token counts are real tokenizer counts rather than whitespace estimates.

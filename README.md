@@ -90,3 +90,5 @@ public/models/                         Bundled model assets
 WebGPU support and ONNX operator coverage vary by browser and device. Model downloads are client-side, and the app currently reports runtime failures rather than falling back to a server inference provider.
 
 The native Tiny GPT-2 adapter is a full-context correctness baseline and does not use a KV cache. Remote pipelines may use architecture-specific caching internally. See [`docs/architecture.md`](docs/architecture.md) for support semantics, metric definitions, and the next implementation milestones.
+
+Long prompts are accepted, but each model can only receive its own context window. For the bundled 64-token graph, Sophon keeps the most recent 64 tokens and reports how many earlier tokens were omitted.

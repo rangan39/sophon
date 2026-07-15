@@ -11,7 +11,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { DEFAULT_ONNX_MODEL, MODEL_REGISTRY } from "@/lib/onnx-models";
-import { getCapabilities, MAX_PROMPT_CHARS, runBenchmark, runPrompt, unloadModel } from "@/lib/interp-client";
+import { getCapabilities, runBenchmark, runPrompt, unloadModel } from "@/lib/interp-client";
 import type { BenchmarkResult, RuntimeCapabilities } from "@/lib/onnx-types";
 
 type ChatMessage = {
@@ -108,7 +108,7 @@ export function SophonWorkbench() {
           id: Date.now() + 1,
           role: "assistant",
           content: response.result.generatedText || "The model returned an empty response.",
-          meta: `${response.result.metrics.provider} · ${response.result.inputTokenCount}→${response.result.outputTokenCount} tok · ${response.result.tokensPerSecond.toFixed(1)} tok/s · ${Math.round(response.result.elapsedMs)} ms`,
+          meta: `${response.result.metrics.provider} · ${response.result.metrics.contextTokenCount}${response.result.metrics.truncatedInputTokens ? `/${response.result.metrics.promptTokenCount}` : ""}→${response.result.outputTokenCount} tok · ${response.result.tokensPerSecond.toFixed(1)} tok/s · ${Math.round(response.result.elapsedMs)} ms${response.result.metrics.truncatedInputTokens ? ` · ${response.result.metrics.truncatedInputTokens} earlier tok omitted` : ""}`,
         },
       ]);
     } catch (caught) {
@@ -192,10 +192,10 @@ export function SophonWorkbench() {
               <form className="mx-auto max-w-6xl" onSubmit={submitPrompt}>
                 {error ? <div className="mb-3 rounded-md border border-[#ff5f63]/30 bg-[#ff5f63]/10 px-3 py-2 text-sm text-[#ff9a9d]">{error}</div> : null}
                 <div className="relative rounded-md border border-white/[.14] bg-[#111319] shadow-[0_15px_60px_rgb(0_0_0/.28)] transition-colors focus-within:border-[#ff694b]/60 focus-within:shadow-[0_0_0_3px_rgb(255_77_46/.1),0_15px_60px_rgb(0_0_0/.28)]">
-                  <Textarea aria-label="Message Sophon" className="min-h-24 resize-none border-0 bg-transparent pr-14 text-[15px] leading-6 text-white shadow-none placeholder:text-white/25 focus-visible:ring-0" maxLength={MAX_PROMPT_CHARS} onChange={(event) => setPrompt(event.target.value)} onKeyDown={handleKeyDown} placeholder="Ask the local model anything..." value={prompt} />
+                  <Textarea aria-label="Message Sophon" className="min-h-24 resize-none border-0 bg-transparent pr-14 text-[15px] leading-6 text-white shadow-none placeholder:text-white/25 focus-visible:ring-0" onChange={(event) => setPrompt(event.target.value)} onKeyDown={handleKeyDown} placeholder="Ask the local model anything..." value={prompt} />
                   <div className="flex items-center justify-between border-t border-white/[.07] px-3 py-2"><span className="font-mono text-[10px] uppercase tracking-widest text-white/25">{selectedModel.family} · {selectedModel.format.quantization} · {selectedModel.format.sizeLabel}</span><Button aria-label="Send message" className="size-8 rounded-lg bg-[#ff4d2e] text-[#210b07] shadow-[0_0_20px_rgb(255_77_46/.2)] hover:bg-[#ff694b]" disabled={!canSend || isBenchmarking} size="icon" type="submit"><SendHorizontal className="size-4" /></Button></div>
                 </div>
-                <div className="mt-3 flex justify-between px-1 font-mono text-[10px] uppercase tracking-wider text-white/25"><span>Enter to send · Shift + Enter for newline</span><span>{prompt.length}/{MAX_PROMPT_CHARS}</span></div>
+                <div className="mt-3 flex justify-between px-1 font-mono text-[10px] uppercase tracking-wider text-white/25"><span>Enter to send · long prompts use the latest model context window</span><span>{prompt.length} chars</span></div>
               </form>
             </div>
           </section>
