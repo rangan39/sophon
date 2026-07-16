@@ -5,6 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "test": "node --experimental-strip-types --test tests/*.test.mjs",
+    "test:metrics": "node --experimental-strip-types --test tests/generation-metrics.test.mjs",
     "smoke:prompt": "node scripts/smoke_prompt.mjs",
     "start": "next start",
     "lint": "next lint"

@@ -2,6 +2,7 @@ import { QUICK_BENCHMARK } from "@/lib/benchmarks";
 import type {
   BenchmarkResult,
   BenchmarkSuite,
+  GenerationTelemetryEvent,
   ModelLoadResult,
   OnnxLogEvent,
   OnnxRunOptions,
@@ -29,6 +30,7 @@ type PendingRequest = {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   onLog?: (event: OnnxLogEvent) => void;
+  onTelemetry?: (event: GenerationTelemetryEvent) => void;
 };
 
 let runtimeWorker: Worker | null = null;
@@ -65,7 +67,7 @@ export async function runPrompt(prompt: string, options: OnnxRunOptions = {}): P
       temperature: options.temperature,
       topK: options.topK
     }
-  }, options.onLog);
+  }, options.onLog, options.onTelemetry);
 }
 
 export async function runBenchmark(
@@ -105,12 +107,23 @@ function canUseWorker() {
 function getWorker() {
   if (runtimeWorker) return runtimeWorker;
   runtimeWorker = new Worker(new URL("../workers/onnx-worker.ts", import.meta.url), { type: "module" });
-  runtimeWorker.onmessage = (message: MessageEvent<{ type: "log" | "complete" | "error"; requestId: string; event?: OnnxLogEvent; result?: unknown; message?: string }>) => {
+  runtimeWorker.onmessage = (message: MessageEvent<{
+    type: "log" | "telemetry" | "complete" | "error";
+    requestId: string;
+    event?: OnnxLogEvent;
+    telemetry?: GenerationTelemetryEvent;
+    result?: unknown;
+    message?: string;
+  }>) => {
     const response = message.data;
     const pending = pendingRequests.get(response.requestId);
     if (!pending) return;
     if (response.type === "log") {
       if (response.event) pending.onLog?.(response.event);
+      return;
+    }
+    if (response.type === "telemetry") {
+      if (response.telemetry) pending.onTelemetry?.(response.telemetry);
       return;
     }
     pendingRequests.delete(response.requestId);
@@ -127,13 +140,18 @@ function getWorker() {
   return runtimeWorker;
 }
 
-function requestWorker<T>(request: WorkerRequestInput, onLog?: (event: OnnxLogEvent) => void) {
+function requestWorker<T>(
+  request: WorkerRequestInput,
+  onLog?: (event: OnnxLogEvent) => void,
+  onTelemetry?: (event: GenerationTelemetryEvent) => void
+) {
   const requestId = `sophon-${Date.now()}-${requestCounter += 1}`;
   return new Promise<T>((resolve, reject) => {
     pendingRequests.set(requestId, {
       resolve: (value) => resolve(value as T),
       reject,
-      onLog
+      onLog,
+      onTelemetry
     });
     getWorker().postMessage({ ...request, requestId } satisfies WorkerRequest);
   });

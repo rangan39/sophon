@@ -1,10 +1,14 @@
 import { getModelDefinition, getModelRepo, type ModelManifest, type ModelProvider } from "@/lib/onnx-models";
+import { calculateGenerationTiming } from "@/lib/generation-metrics";
+import { decodeTokenPieces, markActiveContext } from "@/lib/token-display";
 import type {
   BenchmarkResult,
   BenchmarkRun,
   BenchmarkSuite,
+  GenerationTelemetryEvent,
   ModelLoadResult,
   OnnxLogEvent,
+  OnnxInputToken,
   OnnxRunOptions,
   OnnxRunResponse,
   OnnxRunResult,
@@ -18,6 +22,7 @@ type TokenizerLike = {
   decode: (tokenIds: number[] | bigint[], options?: Record<string, unknown>) => string;
   pad_token_id?: number | null;
   eos_token_id?: number | null;
+  all_special_ids?: Array<number | bigint>;
 };
 type SessionLike = {
   inputNames?: string[];
@@ -133,9 +138,11 @@ export async function benchmarkOnnxModel(
           promptId: benchmarkPrompt.id,
           iteration,
           ok: true,
-          generationMs: response.result.metrics.generationMs,
-          firstTokenMs: response.result.metrics.firstTokenMs,
-          tokensPerSecond: response.result.metrics.tokensPerSecond,
+          endToEndMs: response.result.metrics.endToEndMs,
+          ttftMs: response.result.metrics.ttftMs,
+          decodeTokensPerSecond: response.result.metrics.decodeTokensPerSecond,
+          timePerOutputTokenMs: response.result.metrics.timePerOutputTokenMs,
+          p95InterTokenLatencyMs: response.result.metrics.p95InterTokenLatencyMs,
           outputTokenCount: response.result.metrics.outputTokenCount
         });
       } else {
@@ -143,9 +150,11 @@ export async function benchmarkOnnxModel(
           promptId: benchmarkPrompt.id,
           iteration,
           ok: false,
-          generationMs: null,
-          firstTokenMs: null,
-          tokensPerSecond: null,
+          endToEndMs: null,
+          ttftMs: null,
+          decodeTokensPerSecond: null,
+          timePerOutputTokenMs: null,
+          p95InterTokenLatencyMs: null,
           outputTokenCount: null,
           error: response.message
         });
@@ -164,9 +173,10 @@ export async function benchmarkOnnxModel(
     summary: {
       successfulRuns: successful.length,
       failedRuns: runs.length - successful.length,
-      medianGenerationMs: median(successful.map((run) => run.generationMs)),
-      medianTokensPerSecond: median(successful.map((run) => run.tokensPerSecond)),
-      medianFirstTokenMs: median(successful.map((run) => run.firstTokenMs))
+      medianEndToEndMs: median(successful.map((run) => run.endToEndMs)),
+      medianDecodeTokensPerSecond: median(successful.map((run) => run.decodeTokensPerSecond)),
+      medianTtftMs: median(successful.map((run) => run.ttftMs)),
+      medianTimePerOutputTokenMs: median(successful.map((run) => run.timePerOutputTokenMs))
     }
   };
   options.onLog?.({
@@ -189,9 +199,11 @@ async function runLocalModel(prompt: string, model: ModelManifest, options: Onnx
     const provider = resolveProvider(model);
     const runtime = await getLocalRuntime(model, log);
     const modelLoadMs = performance.now() - loadStartedAt;
+    const generationStartedAt = performance.now();
     const allPromptTokenIds = runtime.tokenizer.encode(prompt, { add_special_tokens: false });
     const promptTokenIds = allPromptTokenIds.slice(-runtime.sequenceLength);
     const truncatedInputTokens = allPromptTokenIds.length - promptTokenIds.length;
+    const inputTokens: OnnxInputToken[] = markActiveContext(decodeTokens(runtime.tokenizer, allPromptTokenIds), truncatedInputTokens);
     log({ level: "info", message: "Prompt tokenized", detail: `${allPromptTokenIds.length} prompt tokens · ${promptTokenIds.length} in active context`, phase: "tokenize" });
     if (truncatedInputTokens > 0) {
       log({
@@ -202,12 +214,13 @@ async function runLocalModel(prompt: string, model: ModelManifest, options: Onnx
       });
     }
 
-    const generationStartedAt = performance.now();
     const allTokenIds = [...promptTokenIds];
     const generatedTokens: OnnxToken[] = [];
-    let firstTokenMs: number | null = null;
+    const tokenTimestamps: number[] = [];
     let lastOutputs: Record<string, TensorLike> = {};
     const eosTokenId = runtime.tokenizer.eos_token_id ?? null;
+
+    emitTelemetry(options, "prefill", generationStartedAt, tokenTimestamps, allPromptTokenIds.length, promptTokenIds.length);
 
     for (let step = 0; step < maxNewTokens; step += 1) {
       const context = allTokenIds.slice(-runtime.sequenceLength);
@@ -221,17 +234,19 @@ async function runLocalModel(prompt: string, model: ModelManifest, options: Onnx
       const logits = lastOutputs.logits ?? lastOutputs[Object.keys(lastOutputs)[0]];
       if (!logits) throw new Error("The ONNX model did not return a logits output.");
       const nextTokenId = sampleNextToken(logits, context.length - 1, temperature, topK);
-      const tokenText = runtime.tokenizer.decode([nextTokenId], { clean_up_tokenization_spaces: false, skip_special_tokens: false });
       allTokenIds.push(nextTokenId);
-      generatedTokens.push({ id: nextTokenId, text: tokenText });
-      if (firstTokenMs === null) firstTokenMs = performance.now() - generationStartedAt;
       if (eosTokenId !== null && nextTokenId === eosTokenId) break;
+      const tokenText = runtime.tokenizer.decode([nextTokenId], { clean_up_tokenization_spaces: false, skip_special_tokens: false });
+      generatedTokens.push({ id: nextTokenId, text: tokenText });
+      tokenTimestamps.push(performance.now());
+      emitTelemetry(options, "decode", generationStartedAt, tokenTimestamps, allPromptTokenIds.length, promptTokenIds.length);
     }
 
-    const generationMs = performance.now() - generationStartedAt;
+    const timing = emitTelemetry(options, "complete", generationStartedAt, tokenTimestamps, allPromptTokenIds.length, promptTokenIds.length);
+    const generationMs = timing.endToEndMs;
     const generatedText = runtime.tokenizer.decode(generatedTokens.map((token) => token.id), { clean_up_tokenization_spaces: false, skip_special_tokens: true });
     const fullText = runtime.tokenizer.decode(allTokenIds, { clean_up_tokenization_spaces: false, skip_special_tokens: true });
-    const tokensPerSecond = generatedTokens.length > 0 ? generatedTokens.length / (generationMs / 1000) : 0;
+    const tokensPerSecond = timing.decodeTokensPerSecond ?? 0;
     const result: OnnxRunResult = {
       model: {
         id: model.id,
@@ -244,6 +259,7 @@ async function runLocalModel(prompt: string, model: ModelManifest, options: Onnx
       prompt,
       generatedText,
       fullText,
+      inputTokens,
       generatedTokens,
       inputTokenCount: promptTokenIds.length,
       outputTokenCount: generatedTokens.length,
@@ -252,8 +268,14 @@ async function runLocalModel(prompt: string, model: ModelManifest, options: Onnx
       metrics: {
         provider,
         modelLoadMs,
+        endToEndMs: timing.endToEndMs,
+        ttftMs: timing.ttftMs,
         generationMs,
-        firstTokenMs,
+        firstTokenMs: timing.ttftMs,
+        decodeMs: timing.decodeMs,
+        decodeTokensPerSecond: timing.decodeTokensPerSecond,
+        timePerOutputTokenMs: timing.timePerOutputTokenMs,
+        p95InterTokenLatencyMs: timing.p95InterTokenLatencyMs,
         promptTokenCount: allPromptTokenIds.length,
         contextTokenCount: promptTokenIds.length,
         truncatedInputTokens,
@@ -265,7 +287,7 @@ async function runLocalModel(prompt: string, model: ModelManifest, options: Onnx
       outputNames: runtime.session.outputNames ?? Object.keys(lastOutputs),
       outputShapes: Object.fromEntries(Object.entries(lastOutputs).map(([name, tensor]) => [name, [...tensor.dims]]))
     };
-    log({ level: "success", message: "Generation complete", detail: `${result.outputTokenCount} tokens · ${tokensPerSecond.toFixed(1)} tok/s`, durationMs: Math.round(generationMs), phase: "runtime" });
+    log({ level: "success", message: "Generation complete", detail: `${result.outputTokenCount} tokens · ${formatRate(timing.decodeTokensPerSecond)}`, durationMs: Math.round(generationMs), phase: "runtime" });
     return { ok: true, result };
   } catch (error) {
     return failure(error, log, model.label);
@@ -284,20 +306,45 @@ async function runTransformersJsModel(prompt: string, model: ModelManifest, opti
     const generator = await getPipeline(model, provider, log);
     const modelLoadMs = performance.now() - loadStartedAt;
     if (!generator.tokenizer) throw new Error(`${model.label} did not expose a tokenizer, so Sophon cannot report valid token metrics.`);
-    const inputTokenIds = generator.tokenizer.encode(prompt, { add_special_tokens: false });
     const generationStartedAt = performance.now();
+    const inputTokenIds = generator.tokenizer.encode(prompt, { add_special_tokens: false });
+    const inputTokens: OnnxInputToken[] = markActiveContext(decodeTokens(generator.tokenizer, inputTokenIds), 0);
+    const tokenTimestamps: number[] = [];
+    const streamedTokenIds: number[] = [];
+    const specialTokenIds = new Set((generator.tokenizer.all_special_ids ?? []).map(Number));
+    const { TextStreamer } = await import("@huggingface/transformers");
+    const streamer = new TextStreamer(generator.tokenizer as never, {
+      skip_prompt: true,
+      skip_special_tokens: true,
+      callback_function: () => undefined,
+      token_callback_function: (tokens) => {
+        const emittedAt = performance.now();
+        for (const token of tokens) {
+          const tokenId = Number(token);
+          if (specialTokenIds.has(tokenId)) continue;
+          streamedTokenIds.push(tokenId);
+          tokenTimestamps.push(emittedAt);
+        }
+        emitTelemetry(options, "decode", generationStartedAt, tokenTimestamps, inputTokenIds.length, inputTokenIds.length, emittedAt);
+      }
+    });
+    emitTelemetry(options, "prefill", generationStartedAt, tokenTimestamps, inputTokenIds.length, inputTokenIds.length);
     const output = await generator(prompt, {
       max_new_tokens: maxNewTokens,
       do_sample: temperature > 0.1 && topK > 1,
       temperature,
       top_k: topK,
-      return_full_text: false
+      return_full_text: false,
+      streamer
     });
-    const generationMs = performance.now() - generationStartedAt;
+    const timing = emitTelemetry(options, "complete", generationStartedAt, tokenTimestamps, inputTokenIds.length, inputTokenIds.length);
+    const generationMs = timing.endToEndMs;
     const generatedText = readGeneratedText(output);
-    const outputTokenIds = generator.tokenizer.encode(generatedText, { add_special_tokens: false });
-    const generatedTokens = outputTokenIds.map((id) => ({ id, text: generator.tokenizer?.decode([id], { clean_up_tokenization_spaces: false, skip_special_tokens: false }) ?? "" }));
-    const tokensPerSecond = outputTokenIds.length > 0 ? outputTokenIds.length / (generationMs / 1000) : 0;
+    const outputTokenIds = streamedTokenIds.length > 0
+      ? streamedTokenIds
+      : generator.tokenizer.encode(generatedText, { add_special_tokens: false });
+    const generatedTokens = decodeTokens(generator.tokenizer, outputTokenIds);
+    const tokensPerSecond = timing.decodeTokensPerSecond ?? 0;
     const repo = getModelRepo(model);
     const result: OnnxRunResult = {
       model: {
@@ -311,6 +358,7 @@ async function runTransformersJsModel(prompt: string, model: ModelManifest, opti
       prompt,
       generatedText,
       fullText: `${prompt}${generatedText}`,
+      inputTokens,
       generatedTokens,
       inputTokenCount: inputTokenIds.length,
       outputTokenCount: outputTokenIds.length,
@@ -319,8 +367,14 @@ async function runTransformersJsModel(prompt: string, model: ModelManifest, opti
       metrics: {
         provider,
         modelLoadMs,
+        endToEndMs: timing.endToEndMs,
+        ttftMs: timing.ttftMs,
         generationMs,
-        firstTokenMs: null,
+        firstTokenMs: timing.ttftMs,
+        decodeMs: timing.decodeMs,
+        decodeTokensPerSecond: timing.decodeTokensPerSecond,
+        timePerOutputTokenMs: timing.timePerOutputTokenMs,
+        p95InterTokenLatencyMs: timing.p95InterTokenLatencyMs,
         promptTokenCount: inputTokenIds.length,
         contextTokenCount: inputTokenIds.length,
         truncatedInputTokens: 0,
@@ -332,7 +386,7 @@ async function runTransformersJsModel(prompt: string, model: ModelManifest, opti
       outputNames: [...model.graph.outputNames],
       outputShapes: {}
     };
-    log({ level: "success", message: "Generation complete", detail: `${result.outputTokenCount} tokens · ${tokensPerSecond.toFixed(1)} tok/s`, durationMs: Math.round(generationMs), phase: "runtime" });
+    log({ level: "success", message: "Generation complete", detail: `${result.outputTokenCount} tokens · ${formatRate(timing.decodeTokensPerSecond)}`, durationMs: Math.round(generationMs), phase: "runtime" });
     return { ok: true, result };
   } catch (error) {
     return failure(error, log, model.label);
@@ -417,6 +471,36 @@ function readGeneratedText(output: unknown) {
     return typeof value === "string" ? value : "";
   }
   return "";
+}
+
+function emitTelemetry(
+  options: OnnxRunOptions,
+  phase: GenerationTelemetryEvent["phase"],
+  startedAtMs: number,
+  tokenTimestampsMs: readonly number[],
+  promptTokenCount: number,
+  contextTokenCount: number,
+  observedAtMs = performance.now()
+) {
+  const event: GenerationTelemetryEvent = {
+    phase,
+    promptTokenCount,
+    contextTokenCount,
+    ...calculateGenerationTiming(startedAtMs, tokenTimestampsMs, observedAtMs)
+  };
+  options.onTelemetry?.(event);
+  return event;
+}
+
+function formatRate(tokensPerSecond: number | null) {
+  return tokensPerSecond === null ? "decode rate pending" : `${tokensPerSecond.toFixed(1)} decode tok/s`;
+}
+
+function decodeTokens(tokenizer: TokenizerLike, tokenIds: readonly number[]): OnnxToken[] {
+  return decodeTokenPieces(tokenIds, (ids) => tokenizer.decode(ids, {
+    clean_up_tokenization_spaces: false,
+    skip_special_tokens: false
+  }));
 }
 
 function padIds(ids: number[], length: number, padId: number) {

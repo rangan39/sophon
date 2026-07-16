@@ -1,4 +1,5 @@
 import type { ModelProvider, ModelVerification } from "@/lib/onnx-models";
+import type { GenerationTimingSnapshot } from "@/lib/generation-metrics";
 
 export type OnnxRuntimePhase = "download" | "tokenize" | "inference" | "generate" | "benchmark" | "runtime";
 export type OnnxLogLevel = "info" | "success" | "warning" | "error";
@@ -17,9 +18,17 @@ export type OnnxRunOptions = {
   temperature?: number;
   topK?: number;
   onLog?: (event: OnnxLogEvent) => void;
+  onTelemetry?: (event: GenerationTelemetryEvent) => void;
+};
+
+export type GenerationTelemetryEvent = GenerationTimingSnapshot & {
+  phase: "prefill" | "decode" | "complete";
+  promptTokenCount: number;
+  contextTokenCount: number;
 };
 
 export type OnnxToken = { id: number; text: string };
+export type OnnxInputToken = OnnxToken & { inContext: boolean };
 
 export type RuntimeCapabilities = {
   webgpu: boolean;
@@ -39,8 +48,14 @@ export type ModelLoadResult = {
 export type GenerationMetrics = {
   provider: ModelProvider;
   modelLoadMs: number;
+  endToEndMs: number;
+  ttftMs: number | null;
   generationMs: number;
   firstTokenMs: number | null;
+  decodeMs: number;
+  decodeTokensPerSecond: number | null;
+  timePerOutputTokenMs: number | null;
+  p95InterTokenLatencyMs: number | null;
   promptTokenCount: number;
   contextTokenCount: number;
   truncatedInputTokens: number;
@@ -61,6 +76,7 @@ export type OnnxRunResult = {
   prompt: string;
   generatedText: string;
   fullText: string;
+  inputTokens: OnnxInputToken[];
   generatedTokens: OnnxToken[];
   inputTokenCount: number;
   outputTokenCount: number;
@@ -89,9 +105,11 @@ export type BenchmarkRun = {
   promptId: string;
   iteration: number;
   ok: boolean;
-  generationMs: number | null;
-  firstTokenMs: number | null;
-  tokensPerSecond: number | null;
+  endToEndMs: number | null;
+  ttftMs: number | null;
+  decodeTokensPerSecond: number | null;
+  timePerOutputTokenMs: number | null;
+  p95InterTokenLatencyMs: number | null;
   outputTokenCount: number | null;
   error?: string;
 };
@@ -106,8 +124,9 @@ export type BenchmarkResult = {
   summary: {
     successfulRuns: number;
     failedRuns: number;
-    medianGenerationMs: number | null;
-    medianTokensPerSecond: number | null;
-    medianFirstTokenMs: number | null;
+    medianEndToEndMs: number | null;
+    medianDecodeTokensPerSecond: number | null;
+    medianTtftMs: number | null;
+    medianTimePerOutputTokenMs: number | null;
   };
 };
