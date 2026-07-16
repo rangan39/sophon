@@ -1,33 +1,30 @@
 "use client";
 
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
-import { Activity, CircleUserRound, Gauge, LoaderCircle, MessageSquareText, PanelLeft, Plus, SendHorizontal } from "lucide-react";
+import { Activity, CircleUserRound, LoaderCircle, MessageSquareText, PanelLeft, Plus, SendHorizontal } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Message, MessageAvatar, MessageContent } from "@/components/ui/message";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
+import { SophonModelSelector } from "@/components/sophon-model-selector";
 import { Textarea } from "@/components/ui/textarea";
+import { InspectableMessage, type InspectableToken } from "@/components/token-lens";
 import { DEFAULT_ONNX_MODEL, MODEL_REGISTRY } from "@/lib/onnx-models";
-import { getCapabilities, runBenchmark, runPrompt, unloadModel } from "@/lib/interp-client";
-import type { BenchmarkResult, RuntimeCapabilities } from "@/lib/onnx-types";
+import { getCapabilities, runPrompt, unloadModel } from "@/lib/interp-client";
+import type { RuntimeCapabilities } from "@/lib/onnx-types";
 
 type ChatMessage = {
   id: number;
   role: "user" | "assistant";
   content: string;
   meta?: string;
+  tokens?: InspectableToken[];
 };
 
 function GreekGlyph({ children, className = "" }: { children: string; className?: string }) {
   return <span aria-hidden="true" className={`font-serif text-base leading-none ${className}`}>{children}</span>;
-}
-
-function MetricKpi({ label, value, unit }: { label: string; value: string; unit?: string }) {
-  return <div className="border border-white/[.08] bg-black/20 px-2.5 py-2"><p className="font-mono text-[8px] uppercase tracking-[0.16em] text-white/30">{label}</p><p className="mt-1 font-mono text-sm tabular-nums text-white/80">{value}{unit ? <span className="ml-1 text-[8px] uppercase text-white/30">{unit}</span> : null}</p></div>;
 }
 
 const starterMessages: ChatMessage[] = [
@@ -46,39 +43,14 @@ export function SophonWorkbench() {
   const [error, setError] = useState<string | null>(null);
   const [modelId, setModelId] = useState(DEFAULT_ONNX_MODEL.id);
   const [capabilities, setCapabilities] = useState<RuntimeCapabilities | null>(null);
-  const [benchmark, setBenchmark] = useState<BenchmarkResult | null>(null);
-  const [isBenchmarking, setIsBenchmarking] = useState(false);
-  const [autoBenchmark, setAutoBenchmark] = useState(true);
-  const benchmarkedModelRef = useRef<string | null>(null);
+  const generationIdRef = useRef(0);
   const selectedModel = MODEL_REGISTRY.find((model) => model.id === modelId) ?? DEFAULT_ONNX_MODEL;
 
-  const canSend = prompt.trim().length > 0 && !isRunning && !isBenchmarking;
+  const canSend = prompt.trim().length > 0 && !isRunning;
 
   useEffect(() => {
     void getCapabilities().then(setCapabilities).catch(() => setCapabilities({ webgpu: false, wasm: true, crossOriginIsolated: false }));
   }, []);
-
-  useEffect(() => {
-    if (!autoBenchmark || !capabilities || benchmarkedModelRef.current === modelId) return;
-    benchmarkedModelRef.current = modelId;
-    let active = true;
-    setIsBenchmarking(true);
-    setBenchmark(null);
-    setError(null);
-    void runBenchmark(modelId, { measuredRuns: 3 })
-      .then((result) => {
-        if (active) setBenchmark(result);
-      })
-      .catch((caught) => {
-        if (active) setError(caught instanceof Error ? caught.message : "The benchmark failed.");
-      })
-      .finally(() => {
-        if (active) setIsBenchmarking(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [autoBenchmark, capabilities, modelId]);
 
   function resetChat() {
     setMessages(starterMessages);
@@ -89,7 +61,6 @@ export function SophonWorkbench() {
   function selectModel(nextModelId: string) {
     if (nextModelId !== modelId) void unloadModel();
     setModelId(nextModelId);
-    setBenchmark(null);
     setError(null);
   }
 
@@ -103,19 +74,31 @@ export function SophonWorkbench() {
   async function submitPrompt(event?: FormEvent) {
     event?.preventDefault();
     const text = prompt.trim();
-    if (!text || isRunning || isBenchmarking) return;
+    if (!text || isRunning) return;
 
+    const generationId = generationIdRef.current += 1;
+    const userMessageId = Date.now();
     setPrompt("");
     setError(null);
     setIsRunning(true);
-    setMessages((current) => [...current, { id: Date.now(), role: "user", content: text }]);
+    setMessages((current) => [...current, { id: userMessageId, role: "user", content: text }]);
 
     try {
-      const response = await runPrompt(text, { modelId, maxNewTokens: 48, temperature: 0.8 });
+      const response = await runPrompt(text, {
+        modelId,
+        maxNewTokens: 48,
+        temperature: 0.8
+      });
+      if (generationIdRef.current !== generationId) return;
       if (!response.ok) {
         setError(response.message);
         return;
       }
+
+      setMessages((current) => current.map((message) => message.id === userMessageId ? {
+        ...message,
+        tokens: response.result.inputTokens
+      } : message));
 
       setMessages((current) => [
         ...current,
@@ -123,13 +106,14 @@ export function SophonWorkbench() {
           id: Date.now() + 1,
           role: "assistant",
           content: response.result.generatedText || "The model returned an empty response.",
-          meta: `${response.result.metrics.provider} · ${response.result.metrics.contextTokenCount}${response.result.metrics.truncatedInputTokens ? `/${response.result.metrics.promptTokenCount}` : ""}→${response.result.outputTokenCount} tok · ${response.result.tokensPerSecond.toFixed(1)} tok/s · ${Math.round(response.result.elapsedMs)} ms${response.result.metrics.truncatedInputTokens ? ` · ${response.result.metrics.truncatedInputTokens} earlier tok omitted` : ""}`,
+          tokens: response.result.generatedTokens,
+          meta: `${response.result.metrics.provider} · ${response.result.metrics.contextTokenCount}${response.result.metrics.truncatedInputTokens ? `/${response.result.metrics.promptTokenCount}` : ""}→${response.result.outputTokenCount} tok · ${formatRate(response.result.metrics.decodeTokensPerSecond)} · ${formatDuration(response.result.metrics.ttftMs)} TTFT${response.result.metrics.truncatedInputTokens ? ` · ${response.result.metrics.truncatedInputTokens} earlier tok omitted` : ""}`,
         },
       ]);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "The local model could not run.");
     } finally {
-      setIsRunning(false);
+      if (generationIdRef.current === generationId) setIsRunning(false);
     }
   }
 
@@ -149,18 +133,13 @@ export function SophonWorkbench() {
           </div>
           <div className="flex items-center gap-3">
             <div className="hidden items-center gap-2 font-mono text-[10px] uppercase tracking-widest text-[#7df0a8] sm:flex"><span className="size-1.5 rounded-full bg-[#7df0a8] shadow-[0_0_10px_#7df0a8]" />{capabilities ? capabilities.webgpu ? "WebGPU online" : capabilities.wasm ? "WASM fallback" : "No runtime" : "Probing runtime"}</div>
-            <Select disabled={isRunning || isBenchmarking} onValueChange={selectModel} value={modelId}>
-            <SelectTrigger aria-label="Choose model" className="h-7 w-[132px] border-white/[.12] bg-white/[.045] px-2 font-mono text-[9px] uppercase tracking-wide text-white/75 shadow-none hover:border-[#ff694b]/50 sm:w-[150px]"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {MODEL_REGISTRY.map((model) => <SelectItem key={model.id} value={model.id}><span className="flex items-center justify-between gap-5"><span>{model.label}</span><span className="text-[10px] text-muted-foreground">{model.verification === "verified" ? "verified" : "experimental"} · {model.format.sizeLabel}</span></span></SelectItem>)}
-            </SelectContent>
-            </Select>
+            <SophonModelSelector disabled={isRunning} modelId={modelId} onSelect={selectModel} />
           </div>
         </header>
 
         <div className="grid min-h-0 flex-1 grid-cols-[250px_minmax(0,1fr)] max-[700px]:grid-cols-1">
           <aside className="flex flex-col border-r border-white/[.08] bg-[#0a0b0e]/70 p-4 max-[700px]:hidden">
-            <Button className="h-11 w-full justify-start gap-2 border-white/[.12] bg-white/[.045] font-mono text-xs text-white hover:border-[#ff694b]/50 hover:bg-[#ff4d2e]/10" onClick={resetChat} variant="outline"><Plus className="size-4 text-[#ff795d]" />New session <span className="ml-auto text-[10px] text-white/25">⌘ N</span></Button>
+            <Button className="h-11 w-full justify-start gap-2 border-white/[.12] bg-white/[.045] font-mono text-xs text-white hover:border-[#ff694b]/50 hover:bg-[#ff4d2e]/10" disabled={isRunning} onClick={resetChat} variant="outline"><Plus className="size-4 text-[#ff795d]" />New session <span className="ml-auto text-[10px] text-white/25">⌘ N</span></Button>
             <div className="mt-9 flex items-center justify-between px-2 font-mono text-[10px] uppercase tracking-[0.2em] text-white/35"><span>Sessions</span><span className="text-white/20">01</span></div>
             <div className="mt-3 rounded-md border border-[#ff694b]/25 bg-[#ff4d2e]/[.08] px-3 py-3 shadow-[inset_3px_0_0_#ff4d2e]">
               <div className="flex items-center gap-2 text-xs font-medium text-white"><span className="size-1.5 rounded-full bg-[#ff694b]" />Getting started</div>
@@ -171,8 +150,6 @@ export function SophonWorkbench() {
               <p className="font-medium text-white/80">{selectedModel.label}</p>
               <p className="mt-1">{selectedModel.description}</p>
               <div className="mt-3 grid grid-cols-2 gap-2 border-t border-white/[.08] pt-3 font-mono text-[10px] uppercase text-white/30"><span>Graph</span><span className="text-right text-white/50">{selectedModel.graph.generation}</span><span>Provider</span><span className="text-right text-[#7df0a8]">{capabilities?.webgpu && selectedModel.providers.includes("webgpu") ? "WebGPU" : selectedModel.providers.includes("wasm") ? "WASM" : "Unavailable"}</span></div>
-              <div className="mt-3 flex items-center justify-between border-t border-white/[.08] pt-3"><span className="flex items-center gap-2 font-mono text-[10px] uppercase tracking-wider text-white/60"><Gauge className={isBenchmarking ? "size-3.5 animate-pulse text-[#ffc857]" : "size-3.5 text-[#ff795d]"} />{isBenchmarking ? "Benchmarking" : "Auto benchmark"}</span><Switch aria-label="Automatically benchmark the selected model" checked={autoBenchmark} disabled={isBenchmarking} onCheckedChange={(checked) => { benchmarkedModelRef.current = checked ? null : benchmarkedModelRef.current; setAutoBenchmark(checked); }} /></div>
-              {autoBenchmark ? <div className="mt-3 grid grid-cols-2 gap-1.5"><MetricKpi label="Throughput" unit="tok/s" value={isBenchmarking ? "···" : benchmark?.summary.medianTokensPerSecond?.toFixed(1) ?? "—"} /><MetricKpi label="Generation" unit="ms" value={isBenchmarking ? "···" : benchmark?.summary.medianGenerationMs?.toFixed(0) ?? "—"} /><MetricKpi label="First token" unit="ms" value={isBenchmarking ? "···" : benchmark?.summary.medianFirstTokenMs?.toFixed(0) ?? "—"} /><MetricKpi label="Pass rate" value={isBenchmarking ? "···" : benchmark ? `${benchmark.summary.successfulRuns}/${benchmark.runs.length}` : "—"} /></div> : null}
             </Card>
           </aside>
 
@@ -190,12 +167,7 @@ export function SophonWorkbench() {
                       <MessageAvatar className={message.role === "user" ? "rounded-md border border-[#ff694b]/40 bg-[#ff4d2e] text-[#210b07] shadow-[0_0_20px_rgb(255_77_46/.12)]" : "rounded-md border border-white/[.12] bg-white/[.06] text-[#ff795d]"}>
                         {message.role === "user" ? <CircleUserRound className="size-4" /> : <GreekGlyph className="text-lg font-semibold">Σ</GreekGlyph>}
                       </MessageAvatar>
-                      <MessageContent className="max-w-[min(920px,calc(100%-3rem))]">
-                        <Bubble align={message.role === "user" ? "end" : "start"} variant={message.role === "user" ? "default" : "muted"}>
-                          <BubbleContent className={message.role === "user" ? "rounded-md border-[#ff694b]/30 bg-[#ff4d2e] font-medium text-[#210b07]" : "rounded-md border-white/[.08] bg-white/[.055] text-white/80"}>{message.content}</BubbleContent>
-                        </Bubble>
-                        {message.meta ? <span className="px-1 text-xs text-muted-foreground">{message.meta}</span> : null}
-                      </MessageContent>
+                      <MessageContent className="max-w-[min(920px,calc(100%-3rem))]"><InspectableMessage content={message.content} meta={message.meta} role={message.role} tokens={message.tokens} /></MessageContent>
                     </Message>
                   ))}
                   {isRunning ? <Message><MessageAvatar><GreekGlyph className="animate-pulse text-lg font-semibold">Σ</GreekGlyph></MessageAvatar><MessageContent><Bubble variant="muted"><BubbleContent><LoaderCircle className="size-4 animate-spin" /></BubbleContent></Bubble></MessageContent></Message> : null}
@@ -208,7 +180,7 @@ export function SophonWorkbench() {
                 {error ? <div className="mb-3 rounded-md border border-[#ff5f63]/30 bg-[#ff5f63]/10 px-3 py-2 text-sm text-[#ff9a9d]">{error}</div> : null}
                 <div className="relative rounded-md border border-white/[.14] bg-[#111319] shadow-[0_15px_60px_rgb(0_0_0/.28)] transition-colors focus-within:border-[#ff694b]/60 focus-within:shadow-[0_0_0_3px_rgb(255_77_46/.1),0_15px_60px_rgb(0_0_0/.28)]">
                   <Textarea aria-label="Message Sophon" className="min-h-24 resize-none border-0 bg-transparent pr-14 text-[15px] leading-6 text-white shadow-none placeholder:text-white/25 focus-visible:ring-0" onChange={(event) => setPrompt(event.target.value)} onKeyDown={handleKeyDown} placeholder="Ask the local model anything..." value={prompt} />
-                  <div className="flex items-center justify-between border-t border-white/[.07] px-3 py-2"><span className="font-mono text-[10px] uppercase tracking-widest text-white/25">{selectedModel.family} · {selectedModel.format.quantization} · {selectedModel.format.sizeLabel}</span><Button aria-label="Send message" className="size-8 rounded-lg bg-[#ff4d2e] text-[#210b07] shadow-[0_0_20px_rgb(255_77_46/.2)] hover:bg-[#ff694b]" disabled={!canSend || isBenchmarking} size="icon" type="submit"><SendHorizontal className="size-4" /></Button></div>
+                  <div className="flex items-center justify-between border-t border-white/[.07] px-3 py-2"><span className="font-mono text-[10px] uppercase tracking-widest text-white/25">{selectedModel.family} · {selectedModel.format.quantization} · {selectedModel.format.sizeLabel}</span><Button aria-label="Send message" className="size-8 rounded-lg bg-[#ff4d2e] text-[#210b07] shadow-[0_0_20px_rgb(255_77_46/.2)] hover:bg-[#ff694b]" disabled={!canSend} size="icon" type="submit"><SendHorizontal className="size-4" /></Button></div>
                 </div>
                 <div className="mt-3 flex justify-between px-1 font-mono text-[10px] uppercase tracking-wider text-white/25"><span>Enter to send · long prompts use the latest model context window</span><span>{prompt.length} chars</span></div>
               </form>
@@ -218,4 +190,12 @@ export function SophonWorkbench() {
       </div>
     </main>
   );
+}
+
+function formatRate(value: number | null) {
+  return value === null ? "decode rate pending" : `${value.toFixed(1)} decode tok/s`;
+}
+
+function formatDuration(value: number | null) {
+  return value === null ? "—" : `${Math.round(value)} ms`;
 }

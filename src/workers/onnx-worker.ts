@@ -1,5 +1,5 @@
 import { benchmarkOnnxModel, getRuntimeCapabilities, loadOnnxModel, runOnnxTextModel, unloadOnnxModel } from "@/lib/onnx-runner";
-import type { BenchmarkSuite, OnnxLogEvent, OnnxRunOptions } from "@/lib/onnx-types";
+import type { BenchmarkSuite, GenerationTelemetryEvent, OnnxLogEvent, OnnxRunOptions } from "@/lib/onnx-types";
 
 type WorkerRequest =
   | { type: "capabilities"; requestId: string }
@@ -12,6 +12,10 @@ let taskQueue = Promise.resolve();
 
 function postLog(requestId: string, event: OnnxLogEvent) {
   self.postMessage({ type: "log", requestId, event });
+}
+
+function postTelemetry(requestId: string, telemetry: GenerationTelemetryEvent) {
+  self.postMessage({ type: "telemetry", requestId, telemetry });
 }
 
 function complete(requestId: string, result: unknown) {
@@ -45,7 +49,8 @@ self.onmessage = (message: MessageEvent<WorkerRequest>) => {
         complete(request.requestId, await runOnnxTextModel(request.prompt, {
           modelId: request.modelId,
           ...request.options,
-          onLog: (event) => postLog(request.requestId, event)
+          onLog: (event) => postLog(request.requestId, event),
+          onTelemetry: (telemetry) => postTelemetry(request.requestId, telemetry)
         }));
         return;
       }

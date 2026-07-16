@@ -9,7 +9,7 @@ Model manifest
   → persistent model worker
   → model adapter
   → ONNX Runtime provider
-  → generation result / benchmark result
+  → token telemetry / generation result / benchmark result
 ```
 
 The browser owns one long-lived worker. Requests are queued inside that worker so model loading and inference cannot race. Loaded sessions remain available across prompts until the user changes models, explicitly unloads a model, or closes the page.
@@ -31,7 +31,7 @@ The UI accepts prompts of arbitrary length. Because the bundled graph has a fixe
 
 ### Transformers.js
 
-Experimental remote models use the Transformers.js text-generation pipeline. The pipeline owns architecture-specific generation and KV-cache handling. Sophon requires access to the pipeline tokenizer so input and output token counts are real tokenizer counts rather than whitespace estimates.
+Experimental remote models use the Transformers.js text-generation pipeline. The pipeline owns architecture-specific generation and KV-cache handling. Sophon requires access to the pipeline tokenizer so input and output token counts are real tokenizer counts rather than whitespace estimates. A Transformers.js `TextStreamer` timestamps generated token IDs before the completed pipeline result returns.
 
 ### With-past ONNX
 
@@ -39,26 +39,42 @@ A native generic KV-cache adapter is deliberately deferred. It requires model ex
 
 ## Metrics
 
-Sophon currently reports:
+Sophon timestamps tokens inside the worker, on the same monotonic clock as inference. Timing begins after model loading and before prompt tokenization, so model download/load time is reported separately. It reports:
 
 - model load/reuse time
-- generation time
-- first-token latency for the native full-context adapter
+- time to first token (TTFT)
+- end-to-end generation latency
+- decode tokens per second, excluding the first output token
+- time per output token (TPOT)
+- p95 inter-token latency in the completed result
 - tokenizer-derived input and output token counts
-- output tokens per second
 - provider used for the run
 
-Remote pipeline first-token latency remains `null` until token streaming is wired to a supported streamer callback. Sophon does not estimate browser GPU memory because browsers do not expose a reliable cross-platform value.
+For output token timestamps `t[0..n-1]` and request start `s`, the core calculations are:
+
+```text
+TTFT       = t[0] - s
+E2E        = t[n-1] - s
+Decode TPS = 1000 × (n - 1) / (t[n-1] - t[0])
+TPOT       = (t[n-1] - t[0]) / (n - 1)
+```
+
+Decode TPS and TPOT remain unavailable until at least two output tokens exist. Sophon does not estimate browser GPU memory because browsers do not expose a reliable cross-platform value.
+
+The runtime panel's default-on telemetry toggle instruments normal chat requests. Request-scoped worker events update the HUD during decoding and freeze as `Last run` when generation completes. They do not launch extra inference or block chat.
+
+## Token display
+
+Generation results include exact tokenizer IDs and individually decoded text for both the original input and generated output. The chat UI highlights those pieces directly and exposes the token index and vocabulary ID on hover or keyboard focus. Input tokens removed by the sliding context window remain visible but are marked as windowed out.
 
 ## Benchmarks
 
-The quick benchmark uses fixed prompts, one warm-up run per prompt, deterministic greedy decoding, and three measured runs per prompt. Auto benchmark is enabled by default and runs once whenever a model becomes active; it can be disabled from the runtime panel. The UI reports medians and the number of successful runs. This is intended for comparing models on one device, not for claiming results across machines.
+The separate quick benchmark API uses fixed prompts, one warm-up run per prompt, deterministic greedy decoding, and three measured runs per prompt. It reports median TTFT, end-to-end latency, decode throughput, and TPOT. It does not auto-run or feed the live HUD. This is intended for controlled comparisons on one device, not for claiming results across machines.
 
 ## Next technical milestones
 
 1. Add a verified `with-past` model export and native KV-cache adapter.
 2. Pin verified remote repositories to immutable revisions and record artifact sizes/checksums.
-3. Stream tokens and measure first-token latency for remote pipelines.
-4. Cache fetched model artifacts with revision-aware keys and expose storage controls.
-5. Add model conformance fixtures that validate tokenizer, graph inputs/outputs, EOS behavior, and provider compatibility.
-6. Add a larger benchmark mode with enough measured samples for percentile reporting.
+3. Cache fetched model artifacts with revision-aware keys and expose storage controls.
+4. Add model conformance fixtures that validate tokenizer, graph inputs/outputs, EOS behavior, and provider compatibility.
+5. Add a larger benchmark mode with enough measured samples for percentile reporting and browser/GPU metadata.

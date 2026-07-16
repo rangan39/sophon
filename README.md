@@ -12,7 +12,8 @@ Production app: [sophon-coral.vercel.app](https://sophon-coral.vercel.app)
 - Loads additional models lazily through a strict model registry
 - Shows model, runtime, and generation status in a compact HUD-style interface
 - Supports local Tiny GPT-2 assets and remote Transformers.js-compatible ONNX models
-- Automatically runs a deterministic quick benchmark with tokenizer-derived metrics; the runtime-panel toggle is on by default
+- Measures normal chat generations live with tokenizer-derived TTFT, decode throughput, TPOT, and end-to-end latency; telemetry is on by default
+- Highlights exact input and output token boundaries with inspectable token IDs and context-window status
 
 ## Stack
 
@@ -38,6 +39,7 @@ Build and validate the production bundle:
 ```bash
 npm run build
 npm run lint
+npm test
 ```
 
 WebGPU works best in a recent Chromium-based browser. The first run may download and cache the selected model.
@@ -47,7 +49,7 @@ WebGPU works best in a recent Chromium-based browser. The first run may download
 Models are defined in [`src/lib/onnx-models.ts`](src/lib/onnx-models.ts). The registry records graph strategy, provider support, quantization, source revision, and verification status:
 
 ```text
-Model manifest → persistent Web Worker → model adapter → ONNX Runtime provider → chat/benchmark UI
+Model manifest → persistent Web Worker → model adapter → ONNX Runtime provider → token telemetry → chat UI
 ```
 
 The current registry includes:
@@ -80,6 +82,7 @@ The local adapter expects causal language model inputs named `input_ids` and `at
 src/components/sophon-workbench.tsx  Chat/HUD interface
 src/components/ui/                    shadcn-style primitives
 src/lib/onnx-models.ts                 Model registry
+src/lib/generation-metrics.ts          Standardized token timing calculations
 src/lib/onnx-runner.ts                 Local and remote adapters
 src/workers/onnx-worker.ts             Background inference worker
 public/models/                         Bundled model assets
