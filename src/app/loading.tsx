@@ -1,25 +1,12 @@
-import { SquareSigma } from "lucide-react";
-import { sophonBrandMark, sophonChromeSurface, sophonGridSurface } from "@/lib/sophon-tailwind";
-import { cn } from "@/lib/utils";
-
 export default function Loading() {
   return (
-    <main className={cn(sophonGridSurface, "grid h-svh overflow-hidden bg-background text-foreground grid-cols-[380px_minmax(0,1fr)] max-[1024px]:grid-cols-1")}>
-      <aside className={cn(sophonChromeSurface, "min-h-0 border-r max-[1024px]:hidden")} />
-      <section className="grid min-h-0 grid-rows-[58px_minmax(0,1fr)] bg-background">
-        <header className={cn(sophonChromeSurface, "flex items-center justify-between border-b px-4 py-2.5")}>
-          <div className="h-6 w-40 rounded bg-[#a6acb2]/20" />
-          <div className="h-9 w-24 rounded-md bg-[#a6acb2]/20" />
-        </header>
-        <div className={cn(sophonGridSurface, "flex h-full items-center justify-center px-7 text-center text-muted-foreground")}>
-          <div className="flex flex-col items-center rounded-lg border border-[#d5d9dd] bg-white/95 px-8 py-7 shadow-[0_12px_36px_rgb(166_172_178/.16)]">
-            <div className={cn(sophonBrandMark, "grid size-16 place-items-center rounded-md border")}>
-              <SquareSigma className="size-9 text-primary-foreground" />
-            </div>
-            <p className="mt-4 text-sm">Loading Sophon...</p>
-          </div>
-        </div>
-      </section>
+    <main aria-busy="true" className="relative flex h-svh items-center justify-center overflow-hidden bg-sophon-canvas p-6 text-foreground" role="status">
+      <div aria-hidden="true" className="sophon-noise pointer-events-none absolute inset-0" />
+      <div aria-hidden="true" className="sophon-grid pointer-events-none absolute inset-0 opacity-70" />
+      <div className="relative flex flex-col items-center border border-white/[.1] bg-sophon-panel/90 px-8 py-7 shadow-[0_24px_80px_rgb(0_0_0/.45)]">
+        <div aria-hidden="true" className="grid size-14 place-items-center rounded-md border border-sophon-signal-bright/50 bg-sophon-signal font-serif text-2xl font-semibold text-[#210b07] shadow-[0_0_30px_rgb(255_77_46/.16)]">Σ</div>
+        <p className="mt-4 font-mono text-[10px] uppercase tracking-[0.18em] text-white/50">Loading inference console</p>
+      </div>
     </main>
   );
 }

@@ -1,12 +1,26 @@
-from pydantic import BaseModel, Field
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+TokenKind = Literal["normal", "bos", "eos", "special"]
+PredictionKind = Literal["normal", "special"]
 
 
 class RunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     prompt: str = Field(min_length=1, max_length=280)
-    model: str = "gpt2-small"
+    model: Literal["gpt2-small"] = "gpt2-small"
     maxTokens: int = Field(default=64, ge=1, le=128)
     topKPredictions: int = Field(default=5, ge=1, le=10)
     topKAttentionEdges: int = Field(default=8, ge=1, le=32)
+
+    @field_validator("prompt")
+    @classmethod
+    def prompt_must_contain_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Prompt must contain text.")
+        return value
 
 
 class Token(BaseModel):
@@ -14,7 +28,7 @@ class Token(BaseModel):
     id: int
     text: str
     displayText: str | None = None
-    kind: str = "normal"
+    kind: TokenKind = "normal"
 
 
 class AttentionEdge(BaseModel):
@@ -44,7 +58,7 @@ class LayerState(BaseModel):
 class Prediction(BaseModel):
     token: str
     displayToken: str | None = None
-    kind: str = "normal"
+    kind: PredictionKind = "normal"
     probability: float
 
 
@@ -53,7 +67,7 @@ class PromptRun(BaseModel):
     title: str
     prompt: str
     model: str
-    source: str
+    source: Literal["transformer-lens"]
     featuresAvailable: bool = False
     expectedNextToken: str | None = None
     tokens: list[Token]

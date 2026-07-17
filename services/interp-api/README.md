@@ -1,6 +1,6 @@
 # Sophon Interpretability API
 
-Modal-hosted TransformerLens service for producing compact `PromptRun` JSON from real model activations.
+Optional legacy TransformerLens service for producing compact `PromptRun` JSON from real model activations. The current Sophon browser UI does not require this service.
 
 ## Local Development
 
@@ -27,13 +27,19 @@ Deploy:
 modal deploy modal_app.py
 ```
 
-Configure the frontend with the deployed Modal URL:
+Configure allowed browser origins and an optional bearer token on the API deployment:
 
 ```txt
-INTERP_API_URL=https://your-workspace--sophon-interp-fastapi-app.modal.run
-INTERP_API_TOKEN=optional-shared-token
+ALLOWED_ORIGINS=https://your-sophon.example
+AUTH_TOKEN=replace-with-a-long-random-value
 ```
 
-If you want bearer-token protection, set `AUTH_TOKEN` in the Modal environment and set the same value as `INTERP_API_TOKEN` for the Next.js deployment. With no `AUTH_TOKEN`, the service accepts requests without authentication.
+With no `AUTH_TOKEN`, the service accepts run requests without authentication. The secure default CORS policy only allows local development origins; set `ALLOWED_ORIGINS` explicitly before exposing a deployment. Inference requests are serialized because the process shares one cached model/GPU runtime.
+
+The Compose service is opt-in:
+
+```bash
+docker compose --profile legacy-interpretability up interp-api
+```
 
 The v1 service is intentionally compact: prompts are capped at 64 model tokens, dense activations are reduced to scalar summaries, and attention is returned as top-k edges only.

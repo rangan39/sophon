@@ -22,6 +22,15 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-sophon-canvas: var(--sophon-canvas);
+  --color-sophon-panel: var(--sophon-panel);
+  --color-sophon-panel-deep: var(--sophon-panel-deep);
+  --color-sophon-field: var(--sophon-field);
+  --color-sophon-signal: var(--sophon-signal);
+  --color-sophon-signal-bright: var(--sophon-signal-bright);
+  --color-sophon-signal-soft: var(--sophon-signal-soft);
+  --color-sophon-verified: var(--sophon-verified);
+  --color-sophon-warning: var(--sophon-warning);
   --font-serif: var(--font-cormorant), Cormorant Garamond, EB Garamond, Georgia, ui-serif, serif;
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
@@ -51,6 +60,15 @@
   --border: #292c34;
   --input: #292c34;
   --ring: #ff4d2e;
+  --sophon-canvas: #090a0d;
+  --sophon-panel: #0b0c10;
+  --sophon-panel-deep: #0a0b0e;
+  --sophon-field: #111319;
+  --sophon-signal: #ff4d2e;
+  --sophon-signal-bright: #ff694b;
+  --sophon-signal-soft: #ff795d;
+  --sophon-verified: #7df0a8;
+  --sophon-warning: #ffc857;
 }
 
 * {
@@ -78,6 +96,44 @@ body {
 
 .sophon-noise {
   background-image: radial-gradient(circle at 18% 4%, rgb(255 77 46 / 0.07), transparent 25%), radial-gradient(circle at 82% 26%, rgb(73 105 174 / 0.06), transparent 26%);
+}
+
+.sophon-dialog-overlay[data-state="open"] {
+  animation: sophon-fade-in 140ms ease-out;
+}
+
+.sophon-dialog-content[data-state="open"] {
+  animation: sophon-dialog-in 160ms ease-out;
+}
+
+.sophon-drawer[data-state="open"] {
+  animation: sophon-drawer-in 180ms ease-out;
+}
+
+@keyframes sophon-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes sophon-dialog-in {
+  from { opacity: 0; transform: translate(-50%, -48%) scale(0.985); }
+  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+
+@keyframes sophon-drawer-in {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 button,

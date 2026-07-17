@@ -12,7 +12,7 @@ Model manifest
   → token telemetry / generation result / benchmark result
 ```
 
-The browser owns one long-lived worker. Requests are queued inside that worker so model loading and inference cannot race. Loaded sessions remain available across prompts until the user changes models, explicitly unloads a model, or closes the page.
+The browser owns one long-lived worker. Requests are queued inside that worker so model loading and inference cannot race. Loaded sessions remain available across prompts until the user changes models, explicitly unloads a model, or closes the page. A shared discriminated protocol validates requests, events, and completed results at the worker boundary. Operations have recovery timeouts; a timed-out or malformed worker is terminated so the UI cannot remain pending forever.
 
 ## Model support levels
 
@@ -61,11 +61,11 @@ TPOT       = (t[n-1] - t[0]) / (n - 1)
 
 Decode TPS and TPOT remain unavailable until at least two output tokens exist. Sophon does not estimate browser GPU memory because browsers do not expose a reliable cross-platform value.
 
-The runtime panel's default-on telemetry toggle instruments normal chat requests. Request-scoped worker events update the HUD during decoding and freeze as `Last run` when generation completes. They do not launch extra inference or block chat.
+Request-scoped worker events expose the same measurements during decoding without launching extra inference or blocking chat. Completed metrics are attached to the generation result, and the compact chat metadata surfaces the most useful values without a permanent telemetry panel.
 
 ## Token display
 
-Generation results include exact tokenizer IDs and individually decoded text for both the original input and generated output. The chat UI highlights those pieces directly and exposes the token index and vocabulary ID on hover or keyboard focus. Input tokens removed by the sliding context window remain visible but are marked as windowed out.
+Generation results include exact tokenizer IDs and individually decoded text for both the original input and generated output. Messages render as clean text by default; the opt-in token and word modes expose boundaries, token indexes, vocabulary IDs, and active-context state on hover, click, or keyboard focus. Input tokens removed by the sliding context window remain visible but are marked as windowed out.
 
 ## Benchmarks
 
@@ -74,7 +74,7 @@ The separate quick benchmark API uses fixed prompts, one warm-up run per prompt,
 ## Next technical milestones
 
 1. Add a verified `with-past` model export and native KV-cache adapter.
-2. Pin verified remote repositories to immutable revisions and record artifact sizes/checksums.
+2. Record remote artifact sizes/checksums and define a review process for updating pinned revisions.
 3. Cache fetched model artifacts with revision-aware keys and expose storage controls.
 4. Add model conformance fixtures that validate tokenizer, graph inputs/outputs, EOS behavior, and provider compatibility.
 5. Add a larger benchmark mode with enough measured samples for percentile reporting and browser/GPU metadata.

@@ -3,10 +3,10 @@ import modal
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .pip_install(
-        "fastapi>=0.115.0",
-        "pydantic>=2.8.0",
-        "torch>=2.4.0",
-        "transformer-lens>=2.16.0",
+        "fastapi>=0.115.0,<1",
+        "pydantic>=2.8.0,<3",
+        "torch>=2.4.0,<3",
+        "transformer-lens>=2.16.0,<3",
     )
     .add_local_python_source("sophon_interp")
 )

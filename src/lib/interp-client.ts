@@ -9,28 +9,32 @@ import type {
   OnnxRunResponse,
   RuntimeCapabilities
 } from "@/lib/onnx-types";
+import {
+  isWorkerResponse,
+  isWorkerResult,
+  type WorkerRequest,
+  type WorkerRequestInput,
+  type WorkerRequestType,
+  type WorkerResultMap
+} from "@/lib/onnx-worker-protocol";
 
-export { MAX_PROMPT_CHARS, MAX_PROMPT_TOKENS } from "@/lib/trace-config";
 export type { OnnxLogEvent as RuntimeLogEvent, OnnxRunResponse as RunPromptResult } from "@/lib/onnx-types";
 
-type WorkerRequest =
-  | { type: "capabilities"; requestId: string }
-  | { type: "load"; requestId: string; modelId: string }
-  | { type: "generate"; requestId: string; prompt: string; modelId: string; options: Pick<OnnxRunOptions, "maxNewTokens" | "temperature" | "topK"> }
-  | { type: "benchmark"; requestId: string; modelId: string; suite: BenchmarkSuite; measuredRuns: number }
-  | { type: "unload"; requestId: string; modelId?: string };
-
-type WorkerRequestInput = WorkerRequest extends infer Request
-  ? Request extends { requestId: string }
-    ? Omit<Request, "requestId">
-    : never
-  : never;
-
 type PendingRequest = {
+  type: WorkerRequestType;
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
+  timeoutId: number;
   onLog?: (event: OnnxLogEvent) => void;
   onTelemetry?: (event: GenerationTelemetryEvent) => void;
+};
+
+const WORKER_TIMEOUT_MS: Record<WorkerRequestType, number> = {
+  capabilities: 10_000,
+  load: 30 * 60_000,
+  generate: 30 * 60_000,
+  benchmark: 60 * 60_000,
+  unload: 60_000
 };
 
 let runtimeWorker: Worker | null = null;
@@ -42,7 +46,7 @@ export async function getCapabilities(): Promise<RuntimeCapabilities> {
     const { getRuntimeCapabilities } = await import("@/lib/onnx-runner");
     return getRuntimeCapabilities();
   }
-  return requestWorker<RuntimeCapabilities>({ type: "capabilities" });
+  return requestWorker({ type: "capabilities" });
 }
 
 export async function loadModel(modelId: string, onLog?: (event: OnnxLogEvent) => void): Promise<ModelLoadResult> {
@@ -50,7 +54,7 @@ export async function loadModel(modelId: string, onLog?: (event: OnnxLogEvent) =
     const { loadOnnxModel } = await import("@/lib/onnx-runner");
     return loadOnnxModel(modelId, onLog);
   }
-  return requestWorker<ModelLoadResult>({ type: "load", modelId }, onLog);
+  return requestWorker({ type: "load", modelId }, onLog);
 }
 
 export async function runPrompt(prompt: string, options: OnnxRunOptions = {}): Promise<OnnxRunResponse> {
@@ -58,7 +62,7 @@ export async function runPrompt(prompt: string, options: OnnxRunOptions = {}): P
     const { runOnnxTextModel } = await import("@/lib/onnx-runner");
     return runOnnxTextModel(prompt, options);
   }
-  return requestWorker<OnnxRunResponse>({
+  return requestWorker({
     type: "generate",
     prompt,
     modelId: options.modelId ?? "tiny-gpt2",
@@ -80,7 +84,7 @@ export async function runBenchmark(
     const { benchmarkOnnxModel } = await import("@/lib/onnx-runner");
     return benchmarkOnnxModel(modelId, suite, { measuredRuns, onLog: options.onLog });
   }
-  return requestWorker<BenchmarkResult>({ type: "benchmark", modelId, suite, measuredRuns }, options.onLog);
+  return requestWorker({ type: "benchmark", modelId, suite, measuredRuns }, options.onLog);
 }
 
 export async function unloadModel(modelId?: string) {
@@ -89,15 +93,11 @@ export async function unloadModel(modelId?: string) {
     await unloadOnnxModel(modelId);
     return;
   }
-  await requestWorker<{ ok: true }>({ type: "unload", modelId });
+  await requestWorker({ type: "unload", modelId });
 }
 
 export function terminateRuntimeWorker() {
-  runtimeWorker?.terminate();
-  runtimeWorker = null;
-  const error = new Error("The model worker was terminated.");
-  for (const request of pendingRequests.values()) request.reject(error);
-  pendingRequests.clear();
+  resetRuntimeWorker(new Error("The model worker was terminated."));
 }
 
 function canUseWorker() {
@@ -107,52 +107,113 @@ function canUseWorker() {
 function getWorker() {
   if (runtimeWorker) return runtimeWorker;
   runtimeWorker = new Worker(new URL("../workers/onnx-worker.ts", import.meta.url), { type: "module" });
-  runtimeWorker.onmessage = (message: MessageEvent<{
-    type: "log" | "telemetry" | "complete" | "error";
-    requestId: string;
-    event?: OnnxLogEvent;
-    telemetry?: GenerationTelemetryEvent;
-    result?: unknown;
-    message?: string;
-  }>) => {
+  runtimeWorker.onmessage = (message: MessageEvent<unknown>) => {
     const response = message.data;
+    if (!isWorkerResponse(response)) {
+      resetRuntimeWorker(new Error("The model worker returned an invalid message."));
+      return;
+    }
     const pending = pendingRequests.get(response.requestId);
     if (!pending) return;
     if (response.type === "log") {
-      if (response.event) pending.onLog?.(response.event);
+      pending.onLog?.(response.event);
       return;
     }
     if (response.type === "telemetry") {
-      if (response.telemetry) pending.onTelemetry?.(response.telemetry);
+      pending.onTelemetry?.(response.telemetry);
       return;
     }
-    pendingRequests.delete(response.requestId);
-    if (response.type === "error") pending.reject(new Error(response.message || "The model worker failed."));
-    else pending.resolve(response.result);
+    settlePendingRequest(response.requestId);
+    if (response.type === "error") {
+      pending.reject(new Error(response.message || "The model worker failed."));
+      return;
+    }
+    pending.resolve(response.result);
   };
   runtimeWorker.onerror = (event) => {
-    const error = new Error(event.message || "The model worker failed.");
-    for (const request of pendingRequests.values()) request.reject(error);
-    pendingRequests.clear();
-    runtimeWorker?.terminate();
-    runtimeWorker = null;
+    event.preventDefault();
+    resetRuntimeWorker(new Error(event.message || "The model worker failed."));
   };
+  runtimeWorker.onmessageerror = () => resetRuntimeWorker(new Error("The browser could not decode a model worker response."));
   return runtimeWorker;
 }
 
-function requestWorker<T>(
+function requestWorker(request: WorkerRequestInput<"capabilities">, onLog?: (event: OnnxLogEvent) => void, onTelemetry?: (event: GenerationTelemetryEvent) => void): Promise<WorkerResultMap["capabilities"]>;
+function requestWorker(request: WorkerRequestInput<"load">, onLog?: (event: OnnxLogEvent) => void, onTelemetry?: (event: GenerationTelemetryEvent) => void): Promise<WorkerResultMap["load"]>;
+function requestWorker(request: WorkerRequestInput<"generate">, onLog?: (event: OnnxLogEvent) => void, onTelemetry?: (event: GenerationTelemetryEvent) => void): Promise<WorkerResultMap["generate"]>;
+function requestWorker(request: WorkerRequestInput<"benchmark">, onLog?: (event: OnnxLogEvent) => void, onTelemetry?: (event: GenerationTelemetryEvent) => void): Promise<WorkerResultMap["benchmark"]>;
+function requestWorker(request: WorkerRequestInput<"unload">, onLog?: (event: OnnxLogEvent) => void, onTelemetry?: (event: GenerationTelemetryEvent) => void): Promise<WorkerResultMap["unload"]>;
+function requestWorker(
   request: WorkerRequestInput,
   onLog?: (event: OnnxLogEvent) => void,
   onTelemetry?: (event: GenerationTelemetryEvent) => void
-) {
+): Promise<WorkerResultMap[WorkerRequestType]> {
   const requestId = `sophon-${Date.now()}-${requestCounter += 1}`;
-  return new Promise<T>((resolve, reject) => {
+  return new Promise<WorkerResultMap[WorkerRequestType]>((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      resetRuntimeWorker(new Error(`The ${request.type} operation timed out. The model worker was restarted.`));
+    }, WORKER_TIMEOUT_MS[request.type]);
     pendingRequests.set(requestId, {
-      resolve: (value) => resolve(value as T),
+      type: request.type,
+      resolve: (value) => {
+        if (isWorkerResult(request.type, value)) resolve(value);
+        else reject(new Error(`The model worker returned an invalid ${request.type} result.`));
+      },
       reject,
+      timeoutId,
       onLog,
       onTelemetry
     });
-    getWorker().postMessage({ ...request, requestId } satisfies WorkerRequest);
+    try {
+      getWorker().postMessage(withRequestId(request, requestId));
+    } catch (error) {
+      settlePendingRequest(requestId);
+      reject(error instanceof Error ? error : new Error("The model worker request could not be sent."));
+    }
   });
+}
+
+function withRequestId(request: WorkerRequestInput, requestId: string): WorkerRequest {
+  switch (request.type) {
+    case "capabilities":
+      return { type: request.type, requestId };
+    case "load":
+      return { type: request.type, requestId, modelId: request.modelId };
+    case "generate":
+      return {
+        type: request.type,
+        requestId,
+        prompt: request.prompt,
+        modelId: request.modelId,
+        options: request.options
+      };
+    case "benchmark":
+      return {
+        type: request.type,
+        requestId,
+        modelId: request.modelId,
+        suite: request.suite,
+        measuredRuns: request.measuredRuns
+      };
+    case "unload":
+      return { type: request.type, requestId, modelId: request.modelId };
+  }
+}
+
+function settlePendingRequest(requestId: string) {
+  const pending = pendingRequests.get(requestId);
+  if (!pending) return;
+  window.clearTimeout(pending.timeoutId);
+  pendingRequests.delete(requestId);
+}
+
+function resetRuntimeWorker(error: Error) {
+  const worker = runtimeWorker;
+  runtimeWorker = null;
+  worker?.terminate();
+  for (const request of pendingRequests.values()) {
+    window.clearTimeout(request.timeoutId);
+    request.reject(error);
+  }
+  pendingRequests.clear();
 }

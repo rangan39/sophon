@@ -1,12 +1,6 @@
 import { benchmarkOnnxModel, getRuntimeCapabilities, loadOnnxModel, runOnnxTextModel, unloadOnnxModel } from "@/lib/onnx-runner";
-import type { BenchmarkSuite, GenerationTelemetryEvent, OnnxLogEvent, OnnxRunOptions } from "@/lib/onnx-types";
-
-type WorkerRequest =
-  | { type: "capabilities"; requestId: string }
-  | { type: "load"; requestId: string; modelId: string }
-  | { type: "generate"; requestId: string; prompt: string; modelId: string; options: Pick<OnnxRunOptions, "maxNewTokens" | "temperature" | "topK"> }
-  | { type: "benchmark"; requestId: string; modelId: string; suite: BenchmarkSuite; measuredRuns: number }
-  | { type: "unload"; requestId: string; modelId?: string };
+import type { GenerationTelemetryEvent, OnnxLogEvent } from "@/lib/onnx-types";
+import { isWorkerRequest } from "@/lib/onnx-worker-protocol";
 
 let taskQueue = Promise.resolve();
 
@@ -30,9 +24,13 @@ function fail(requestId: string, error: unknown) {
   });
 }
 
-self.onmessage = (message: MessageEvent<WorkerRequest>) => {
+self.onmessage = (message: MessageEvent<unknown>) => {
   const request = message.data;
-  if (!request?.requestId) return;
+  if (!isWorkerRequest(request)) {
+    const requestId = readRequestId(request);
+    if (requestId) fail(requestId, new Error("The model worker received an invalid request."));
+    return;
+  }
 
   if (request.type === "capabilities") {
     complete(request.requestId, getRuntimeCapabilities());
@@ -68,3 +66,8 @@ self.onmessage = (message: MessageEvent<WorkerRequest>) => {
     }
   });
 };
+
+function readRequestId(value: unknown) {
+  if (typeof value !== "object" || value === null || !("requestId" in value)) return null;
+  return typeof value.requestId === "string" ? value.requestId : null;
+}

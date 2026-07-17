@@ -12,13 +12,13 @@ Production app: [sophon-coral.vercel.app](https://sophon-coral.vercel.app)
 - Loads additional models lazily through a strict model registry
 - Shows model, runtime, and generation status in a compact HUD-style interface
 - Supports local Tiny GPT-2 assets and remote Transformers.js-compatible ONNX models
-- Measures normal chat generations live with tokenizer-derived TTFT, decode throughput, TPOT, and end-to-end latency; telemetry is on by default
-- Highlights exact input and output token boundaries with inspectable token IDs and context-window status
+- Measures normal chat generations with tokenizer-derived TTFT, decode throughput, TPOT, and end-to-end latency
+- Provides an opt-in text/token/word lens with exact token IDs and context-window status
 
 ## Stack
 
-- Next.js 14 App Router
-- React 18 and TypeScript
+- Next.js 15 App Router
+- React 19 and strict TypeScript
 - shadcn-style UI primitives
 - ONNX Runtime Web
 - Transformers.js
@@ -27,8 +27,11 @@ Production app: [sophon-coral.vercel.app](https://sophon-coral.vercel.app)
 
 ## Run locally
 
+Use Node.js 22 (the repository includes an `.nvmrc`), then install exactly from the lockfile:
+
 ```bash
-npm install
+nvm use
+npm ci
 npm run dev
 ```
 
@@ -38,11 +41,19 @@ Build and validate the production bundle:
 
 ```bash
 npm run build
-npm run lint
-npm test
+npm run check
 ```
 
 WebGPU works best in a recent Chromium-based browser. The first run may download and cache the selected model.
+
+Build and run the production container:
+
+```bash
+docker build -f Dockerfile.frontend -t sophon .
+docker run --rm -p 3000:3000 sophon
+```
+
+`docker compose up frontend` uses the Dockerfile's development target with source mounts and hot reload.
 
 ## Model architecture
 
@@ -60,7 +71,7 @@ The current registry includes:
 - Llama 3.2 1B — general-purpose model
 - Qwen3 1.7B — larger chat model
 
-Tiny GPT-2 is currently the only `verified` entry. Remote entries are explicitly marked `experimental`; they require compatible ONNX weights hosted in a Transformers.js-compatible repository and may fail on a particular browser or device.
+Tiny GPT-2 is currently the only `verified` entry. Remote entries are explicitly marked `experimental`; their known ONNX repositories are pinned to immutable revisions, but they may still fail on a particular browser or device until Sophon certifies the complete tokenizer, graph, and provider combination.
 
 ## Local model assets
 
@@ -83,6 +94,7 @@ src/components/sophon-workbench.tsx  Chat/HUD interface
 src/components/ui/                    shadcn-style primitives
 src/lib/onnx-models.ts                 Model registry
 src/lib/generation-metrics.ts          Standardized token timing calculations
+src/lib/onnx-worker-protocol.ts         Validated worker message boundary
 src/lib/onnx-runner.ts                 Local and remote adapters
 src/workers/onnx-worker.ts             Background inference worker
 public/models/                         Bundled model assets
@@ -95,3 +107,5 @@ WebGPU support and ONNX operator coverage vary by browser and device. Model down
 The native Tiny GPT-2 adapter is a full-context correctness baseline and does not use a KV cache. Remote pipelines may use architecture-specific caching internally. See [`docs/architecture.md`](docs/architecture.md) for support semantics, metric definitions, and the next implementation milestones.
 
 Long prompts are accepted, but each model can only receive its own context window. For the bundled 64-token graph, Sophon keeps the most recent 64 tokens and reports how many earlier tokens were omitted.
+
+The legacy TransformerLens API under `services/interp-api` is not required by the current browser inference UI. Start it explicitly with `docker compose --profile legacy-interpretability up interp-api`; configure `ALLOWED_ORIGINS` and `AUTH_TOKEN` before exposing it publicly.

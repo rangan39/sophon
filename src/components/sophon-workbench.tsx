@@ -1,83 +1,105 @@
 "use client";
 
-import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
-import { Activity, CircleUserRound, LoaderCircle, MessageSquareText, PanelLeft, Plus, SendHorizontal } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import { Message, MessageAvatar, MessageContent } from "@/components/ui/message";
-import { Bubble, BubbleContent } from "@/components/ui/bubble";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { type FormEvent, type KeyboardEvent, useEffect, useRef, useState } from "react";
+import { CircleUserRound, LoaderCircle, MessageSquareText, SendHorizontal } from "lucide-react";
 import { SophonModelSelector } from "@/components/sophon-model-selector";
-import { Textarea } from "@/components/ui/textarea";
+import { SophonMobileSidebar, SophonSidebar } from "@/components/sophon-sidebar";
 import { InspectableMessage, type InspectableToken } from "@/components/token-lens";
-import { DEFAULT_ONNX_MODEL, MODEL_REGISTRY } from "@/lib/onnx-models";
+import { Badge } from "@/components/ui/badge";
+import { Bubble, BubbleContent } from "@/components/ui/bubble";
+import { Button } from "@/components/ui/button";
+import { Message, MessageAvatar, MessageContent } from "@/components/ui/message";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Textarea } from "@/components/ui/textarea";
 import { getCapabilities, runPrompt, unloadModel } from "@/lib/interp-client";
+import { DEFAULT_ONNX_MODEL, MODEL_REGISTRY, type ModelManifest } from "@/lib/onnx-models";
 import type { RuntimeCapabilities } from "@/lib/onnx-types";
+import { cn } from "@/lib/utils";
 
 type ChatMessage = {
-  id: number;
+  id: string;
   role: "user" | "assistant";
   content: string;
   meta?: string;
   tokens?: InspectableToken[];
 };
 
-function GreekGlyph({ children, className = "" }: { children: string; className?: string }) {
-  return <span aria-hidden="true" className={`font-serif text-base leading-none ${className}`}>{children}</span>;
-}
-
-const starterMessages: ChatMessage[] = [
+const STARTER_MESSAGES: ChatMessage[] = [
   {
-    id: 1,
+    id: "assistant-welcome",
     role: "assistant",
     content: "Hi — I’m Sophon. Ask me something and I’ll run it through the local model in your browser.",
-    meta: "Ready locally",
-  },
+    meta: "Ready locally"
+  }
 ];
 
 export function SophonWorkbench() {
-  const [messages, setMessages] = useState(starterMessages);
+  const [messages, setMessages] = useState(STARTER_MESSAGES);
   const [prompt, setPrompt] = useState("");
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [modelId, setModelId] = useState(DEFAULT_ONNX_MODEL.id);
+  const [modelId, setModelId] = useState<string>(DEFAULT_ONNX_MODEL.id);
   const [capabilities, setCapabilities] = useState<RuntimeCapabilities | null>(null);
   const generationIdRef = useRef(0);
+  const messageEndRef = useRef<HTMLDivElement>(null);
+  const promptRef = useRef<HTMLTextAreaElement>(null);
   const selectedModel = MODEL_REGISTRY.find((model) => model.id === modelId) ?? DEFAULT_ONNX_MODEL;
-
+  const runtimeStatus = getRuntimeStatus(capabilities, selectedModel);
   const canSend = prompt.trim().length > 0 && !isRunning;
 
   useEffect(() => {
-    void getCapabilities().then(setCapabilities).catch(() => setCapabilities({ webgpu: false, wasm: true, crossOriginIsolated: false }));
+    let active = true;
+    void getCapabilities()
+      .then((nextCapabilities) => {
+        if (active) setCapabilities(nextCapabilities);
+      })
+      .catch(() => {
+        if (active) setCapabilities({ webgpu: false, wasm: false, crossOriginIsolated: false });
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
+  useEffect(() => {
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    messageEndRef.current?.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "end" });
+  }, [isRunning, messages]);
+
   function resetChat() {
-    setMessages(starterMessages);
+    generationIdRef.current += 1;
+    setMessages(STARTER_MESSAGES);
     setPrompt("");
     setError(null);
+    setIsRunning(false);
+    window.requestAnimationFrame(() => promptRef.current?.focus());
   }
 
   function selectModel(nextModelId: string) {
-    if (nextModelId !== modelId) void unloadModel();
+    if (nextModelId === modelId) return;
+    const previousModelId = modelId;
     setModelId(nextModelId);
     setError(null);
+    void unloadModel(previousModelId).catch(() => {
+      setError("The previous model could not be released. You can continue with the selected model.");
+    });
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.nativeEvent.isComposing) return;
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       void submitPrompt();
     }
   }
 
-  async function submitPrompt(event?: FormEvent) {
+  async function submitPrompt(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
     const text = prompt.trim();
     if (!text || isRunning) return;
 
     const generationId = generationIdRef.current += 1;
-    const userMessageId = Date.now();
+    const userMessageId = `user-${generationId}`;
     setPrompt("");
     setError(null);
     setIsRunning(true);
@@ -95,20 +117,18 @@ export function SophonWorkbench() {
         return;
       }
 
-      setMessages((current) => current.map((message) => message.id === userMessageId ? {
-        ...message,
-        tokens: response.result.inputTokens
-      } : message));
-
+      const metrics = response.result.metrics;
       setMessages((current) => [
-        ...current,
+        ...current.map((message) => message.id === userMessageId
+          ? { ...message, tokens: response.result.inputTokens }
+          : message),
         {
-          id: Date.now() + 1,
+          id: `assistant-${generationId}`,
           role: "assistant",
           content: response.result.generatedText || "The model returned an empty response.",
           tokens: response.result.generatedTokens,
-          meta: `${response.result.metrics.provider} · ${response.result.metrics.contextTokenCount}${response.result.metrics.truncatedInputTokens ? `/${response.result.metrics.promptTokenCount}` : ""}→${response.result.outputTokenCount} tok · ${formatRate(response.result.metrics.decodeTokensPerSecond)} · ${formatDuration(response.result.metrics.ttftMs)} TTFT${response.result.metrics.truncatedInputTokens ? ` · ${response.result.metrics.truncatedInputTokens} earlier tok omitted` : ""}`,
-        },
+          meta: `${metrics.provider} · ${metrics.contextTokenCount}${metrics.truncatedInputTokens ? `/${metrics.promptTokenCount}` : ""}→${response.result.outputTokenCount} tok · ${formatRate(metrics.decodeTokensPerSecond)} · ${formatDuration(metrics.ttftMs)} TTFT${metrics.truncatedInputTokens ? ` · ${metrics.truncatedInputTokens} earlier tok omitted` : ""}`
+        }
       ]);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "The local model could not run.");
@@ -117,72 +137,114 @@ export function SophonWorkbench() {
     }
   }
 
+  const sidebarProps = {
+    capabilities,
+    disabled: isRunning,
+    model: selectedModel,
+    onNewSession: resetChat
+  };
+
   return (
-    <main className="relative h-svh w-full overflow-hidden bg-[#090a0d] text-[#f4f0e9]">
-      <div className="sophon-noise pointer-events-none absolute inset-0" />
-      <div className="sophon-grid pointer-events-none absolute inset-0 opacity-70" />
-      <div className="relative flex h-svh w-full flex-col bg-[#0b0c10]/80 backdrop-blur-sm">
-        <header className="flex h-[74px] items-center justify-between border-b border-white/[.08] bg-[#0b0c10]/90 px-4 sm:px-7">
-          <div className="flex items-center gap-3">
-            <Button aria-label="Open menu" className="text-white/60 hover:bg-white/[.06] hover:text-white sm:hidden" size="icon" variant="ghost"><PanelLeft className="size-4" /></Button>
-            <div className="relative grid size-9 place-items-center rounded-md border border-[#ff694b]/50 bg-[#ff4d2e] text-[#210b07] shadow-[0_0_30px_rgb(255_77_46/.16)]"><GreekGlyph className="text-lg font-semibold">Σ</GreekGlyph><span className="absolute -right-1 -top-1 size-2 rounded-full bg-[#ffc857] shadow-[0_0_12px_#ffc857]" /></div>
-            <div>
-              <div className="flex items-center gap-2"><h1 className="font-mono text-sm font-semibold tracking-[0.12em] text-white">SOPHON</h1><Badge className="border-[#ff694b]/30 bg-[#ff4d2e]/10 font-mono text-[9px] uppercase tracking-widest text-[#ff9d87]" variant="outline">Local AI</Badge></div>
+    <main className="relative h-svh w-full overflow-hidden bg-sophon-canvas text-foreground">
+      <div aria-hidden="true" className="sophon-noise pointer-events-none absolute inset-0" />
+      <div aria-hidden="true" className="sophon-grid pointer-events-none absolute inset-0 opacity-70" />
+      <div className="relative flex h-svh w-full flex-col bg-sophon-panel/80 backdrop-blur-sm">
+        <header className="flex h-[74px] shrink-0 items-center justify-between border-b border-white/[.08] bg-sophon-panel/90 px-4 sm:px-7">
+          <div className="flex min-w-0 items-center gap-3">
+            <SophonMobileSidebar {...sidebarProps} />
+            <div className="relative grid size-9 shrink-0 place-items-center rounded-md border border-sophon-signal-bright/50 bg-sophon-signal text-[#210b07] shadow-[0_0_30px_rgb(255_77_46/.16)]">
+              <GreekGlyph className="text-lg font-semibold">Σ</GreekGlyph>
+              <span aria-hidden="true" className="absolute -right-1 -top-1 size-2 rounded-full bg-sophon-warning shadow-[0_0_12px_var(--sophon-warning)]" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <h1 className="font-mono text-sm font-semibold tracking-[0.12em] text-white">SOPHON</h1>
+                <Badge className="border-sophon-signal-bright/30 bg-sophon-signal/10 font-mono text-[9px] uppercase tracking-widest text-[#ff9d87]" variant="outline">Local AI</Badge>
+              </div>
               <p className="hidden font-mono text-[10px] uppercase tracking-[0.18em] text-white/35 sm:block">Private inference console</p>
             </div>
           </div>
+
           <div className="flex items-center gap-3">
-            <div className="hidden items-center gap-2 font-mono text-[10px] uppercase tracking-widest text-[#7df0a8] sm:flex"><span className="size-1.5 rounded-full bg-[#7df0a8] shadow-[0_0_10px_#7df0a8]" />{capabilities ? capabilities.webgpu ? "WebGPU online" : capabilities.wasm ? "WASM fallback" : "No runtime" : "Probing runtime"}</div>
+            <div aria-live="polite" className={cn("hidden items-center gap-2 font-mono text-[10px] uppercase tracking-widest sm:flex", runtimeStatus.className)} role="status">
+              <span aria-hidden="true" className={cn("size-1.5 rounded-full", runtimeStatus.dotClassName)} />
+              {runtimeStatus.label}
+            </div>
             <SophonModelSelector disabled={isRunning} modelId={modelId} onSelect={selectModel} />
           </div>
         </header>
 
-        <div className="grid min-h-0 flex-1 grid-cols-[250px_minmax(0,1fr)] max-[700px]:grid-cols-1">
-          <aside className="flex flex-col border-r border-white/[.08] bg-[#0a0b0e]/70 p-4 max-[700px]:hidden">
-            <Button className="h-11 w-full justify-start gap-2 border-white/[.12] bg-white/[.045] font-mono text-xs text-white hover:border-[#ff694b]/50 hover:bg-[#ff4d2e]/10" disabled={isRunning} onClick={resetChat} variant="outline"><Plus className="size-4 text-[#ff795d]" />New session <span className="ml-auto text-[10px] text-white/25">⌘ N</span></Button>
-            <div className="mt-9 flex items-center justify-between px-2 font-mono text-[10px] uppercase tracking-[0.2em] text-white/35"><span>Sessions</span><span className="text-white/20">01</span></div>
-            <div className="mt-3 rounded-md border border-[#ff694b]/25 bg-[#ff4d2e]/[.08] px-3 py-3 shadow-[inset_3px_0_0_#ff4d2e]">
-              <div className="flex items-center gap-2 text-xs font-medium text-white"><span className="size-1.5 rounded-full bg-[#ff694b]" />Getting started</div>
-              <p className="mt-1 pl-3.5 text-[11px] text-white/35">Active now</p>
-            </div>
-            <Card className="mt-auto hidden border-white/[.08] bg-white/[.025] p-3 text-xs leading-5 text-white/45 min-[701px]:block">
-              <div className="mb-3 flex items-center justify-between gap-2 font-mono text-[10px] uppercase tracking-widest text-white/60"><span className="flex items-center gap-2"><Activity className="size-3 text-[#7df0a8]" />Device runtime</span><span className={selectedModel.verification === "verified" ? "text-[#7df0a8]" : "text-[#ffc857]"}>{selectedModel.verification}</span></div>
-              <p className="font-medium text-white/80">{selectedModel.label}</p>
-              <p className="mt-1">{selectedModel.description}</p>
-              <div className="mt-3 grid grid-cols-2 gap-2 border-t border-white/[.08] pt-3 font-mono text-[10px] uppercase text-white/30"><span>Graph</span><span className="text-right text-white/50">{selectedModel.graph.generation}</span><span>Provider</span><span className="text-right text-[#7df0a8]">{capabilities?.webgpu && selectedModel.providers.includes("webgpu") ? "WebGPU" : selectedModel.providers.includes("wasm") ? "WASM" : "Unavailable"}</span></div>
-            </Card>
-          </aside>
+        <div className="grid min-h-0 flex-1 grid-cols-1 min-[701px]:grid-cols-[250px_minmax(0,1fr)]">
+          <SophonSidebar {...sidebarProps} />
 
-          <section className="relative flex min-h-0 min-w-0 flex-col">
+          <section aria-labelledby="conversation-title" className="relative flex min-h-0 min-w-0 flex-col">
             <ScrollArea className="min-h-0 flex-1">
               <div className="mx-auto flex w-full max-w-6xl flex-col gap-8 px-4 py-4 sm:px-12 sm:py-7">
                 <div>
-                  <div className="mb-3 flex items-center justify-between border-b border-white/[.08] pb-3 font-mono text-[10px] uppercase tracking-[0.2em] text-white/35"><span>Transmission log</span><span className="text-[#7df0a8]">Channel open</span></div>
-                  <div className="flex items-center justify-between gap-5"><div><h2 className="font-mono text-xs font-medium uppercase tracking-[0.22em] text-white/70">Conversation buffer</h2><p className="mt-2 font-mono text-[10px] uppercase tracking-wider text-white/25">{selectedModel.family} / {selectedModel.label} / {selectedModel.verification}</p></div><div className="hidden size-12 items-center justify-center rounded-md border border-[#ff694b]/20 bg-[#ff4d2e]/[.04] text-[#ff795d] sm:flex"><MessageSquareText className="size-5" /></div></div>
+                  <div className="mb-3 flex items-center justify-between border-b border-white/[.08] pb-3 font-mono text-[10px] uppercase tracking-[0.2em] text-white/35">
+                    <span>Transmission log</span><span className="text-sophon-verified">Channel open</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-5">
+                    <div className="min-w-0">
+                      <h2 className="font-mono text-xs font-medium uppercase tracking-[0.22em] text-white/70" id="conversation-title">Conversation buffer</h2>
+                      <p className="mt-2 truncate font-mono text-[10px] uppercase tracking-wider text-white/25">{selectedModel.family} / {selectedModel.label} / {selectedModel.verification}</p>
+                    </div>
+                    <div aria-hidden="true" className="hidden size-12 shrink-0 items-center justify-center rounded-md border border-sophon-signal-bright/20 bg-sophon-signal/[.04] text-sophon-signal-soft sm:flex">
+                      <MessageSquareText className="size-5" />
+                    </div>
+                  </div>
                 </div>
 
-                <div className="mt-3 space-y-6">
+                <div aria-busy={isRunning} aria-live="polite" aria-relevant="additions text" className="mt-3 space-y-6" role="log">
                   {messages.map((message) => (
                     <Message align={message.role === "user" ? "end" : "start"} key={message.id}>
-                      <MessageAvatar className={message.role === "user" ? "rounded-md border border-[#ff694b]/40 bg-[#ff4d2e] text-[#210b07] shadow-[0_0_20px_rgb(255_77_46/.12)]" : "rounded-md border border-white/[.12] bg-white/[.06] text-[#ff795d]"}>
-                        {message.role === "user" ? <CircleUserRound className="size-4" /> : <GreekGlyph className="text-lg font-semibold">Σ</GreekGlyph>}
+                      <MessageAvatar className={message.role === "user" ? "rounded-md border border-sophon-signal-bright/40 bg-sophon-signal text-[#210b07] shadow-[0_0_20px_rgb(255_77_46/.12)]" : "rounded-md border border-white/[.12] bg-white/[.06] text-sophon-signal-soft"}>
+                        {message.role === "user" ? <CircleUserRound aria-hidden="true" className="size-4" /> : <GreekGlyph className="text-lg font-semibold">Σ</GreekGlyph>}
                       </MessageAvatar>
-                      <MessageContent className="max-w-[min(920px,calc(100%-3rem))]"><InspectableMessage content={message.content} meta={message.meta} role={message.role} tokens={message.tokens} /></MessageContent>
+                      <MessageContent className="max-w-[min(920px,calc(100%-3rem))]">
+                        <InspectableMessage content={message.content} meta={message.meta} role={message.role} tokens={message.tokens} />
+                      </MessageContent>
                     </Message>
                   ))}
-                  {isRunning ? <Message><MessageAvatar><GreekGlyph className="animate-pulse text-lg font-semibold">Σ</GreekGlyph></MessageAvatar><MessageContent><Bubble variant="muted"><BubbleContent><LoaderCircle className="size-4 animate-spin" /></BubbleContent></Bubble></MessageContent></Message> : null}
+                  {isRunning ? (
+                    <Message>
+                      <MessageAvatar><GreekGlyph className="animate-pulse text-lg font-semibold motion-reduce:animate-none">Σ</GreekGlyph></MessageAvatar>
+                      <MessageContent>
+                        <Bubble variant="muted"><BubbleContent><LoaderCircle aria-hidden="true" className="size-4 animate-spin motion-reduce:animate-none" /><span className="sr-only">Generating response</span></BubbleContent></Bubble>
+                      </MessageContent>
+                    </Message>
+                  ) : null}
+                  <div aria-hidden="true" ref={messageEndRef} />
                 </div>
               </div>
             </ScrollArea>
 
-            <div className="border-t border-white/[.08] bg-[#0b0c10]/90 p-4 backdrop-blur-xl sm:p-6">
+            <div className="shrink-0 border-t border-white/[.08] bg-sophon-panel/90 p-4 backdrop-blur-xl sm:p-6">
               <form className="mx-auto max-w-6xl" onSubmit={submitPrompt}>
-                {error ? <div className="mb-3 rounded-md border border-[#ff5f63]/30 bg-[#ff5f63]/10 px-3 py-2 text-sm text-[#ff9a9d]">{error}</div> : null}
-                <div className="relative rounded-md border border-white/[.14] bg-[#111319] shadow-[0_15px_60px_rgb(0_0_0/.28)] transition-colors focus-within:border-[#ff694b]/60 focus-within:shadow-[0_0_0_3px_rgb(255_77_46/.1),0_15px_60px_rgb(0_0_0/.28)]">
-                  <Textarea aria-label="Message Sophon" className="min-h-24 resize-none border-0 bg-transparent pr-14 text-[15px] leading-6 text-white shadow-none placeholder:text-white/25 focus-visible:ring-0" onChange={(event) => setPrompt(event.target.value)} onKeyDown={handleKeyDown} placeholder="Ask the local model anything..." value={prompt} />
-                  <div className="flex items-center justify-between border-t border-white/[.07] px-3 py-2"><span className="font-mono text-[10px] uppercase tracking-widest text-white/25">{selectedModel.family} · {selectedModel.format.quantization} · {selectedModel.format.sizeLabel}</span><Button aria-label="Send message" className="size-8 rounded-lg bg-[#ff4d2e] text-[#210b07] shadow-[0_0_20px_rgb(255_77_46/.2)] hover:bg-[#ff694b]" disabled={!canSend} size="icon" type="submit"><SendHorizontal className="size-4" /></Button></div>
+                {error ? <div className="mb-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-[#ff9a9d]" id="prompt-error" role="alert">{error}</div> : null}
+                <label className="sr-only" htmlFor="sophon-prompt">Message Sophon</label>
+                <div className="relative rounded-md border border-white/[.14] bg-sophon-field shadow-[0_15px_60px_rgb(0_0_0/.28)] transition-colors focus-within:border-sophon-signal-bright/60 focus-within:shadow-[0_0_0_3px_rgb(255_77_46/.1),0_15px_60px_rgb(0_0_0/.28)]">
+                  <Textarea
+                    aria-describedby={error ? "prompt-error prompt-help" : "prompt-help"}
+                    aria-invalid={Boolean(error)}
+                    className="min-h-24 resize-none border-0 bg-transparent pr-14 text-[15px] leading-6 text-white shadow-none placeholder:text-white/25 focus-visible:ring-0"
+                    id="sophon-prompt"
+                    onChange={(event) => setPrompt(event.target.value)}
+                    onKeyDown={handleKeyDown}
+                    placeholder="Ask the local model anything..."
+                    ref={promptRef}
+                    value={prompt}
+                  />
+                  <div className="flex items-center justify-between border-t border-white/[.07] px-3 py-2">
+                    <span className="truncate pr-3 font-mono text-[10px] uppercase tracking-widest text-white/25">{selectedModel.family} · {selectedModel.format.quantization} · {selectedModel.format.sizeLabel}</span>
+                    <Button aria-label="Send message" className="relative size-8 shrink-0 rounded-lg bg-sophon-signal text-[#210b07] shadow-[0_0_20px_rgb(255_77_46/.2)] after:absolute after:-inset-1.5 after:content-[''] hover:bg-sophon-signal-bright" disabled={!canSend} size="icon" type="submit">
+                      <SendHorizontal aria-hidden="true" className="size-4" />
+                    </Button>
+                  </div>
                 </div>
-                <div className="mt-3 flex justify-between px-1 font-mono text-[10px] uppercase tracking-wider text-white/25"><span>Enter to send · long prompts use the latest model context window</span><span>{prompt.length} chars</span></div>
+                <div className="mt-3 flex justify-between gap-4 px-1 font-mono text-[10px] uppercase tracking-wider text-white/25" id="prompt-help">
+                  <span>Enter to send · Shift+Enter for a new line</span><span className="shrink-0 tabular-nums">{prompt.length} chars</span>
+                </div>
               </form>
             </div>
           </section>
@@ -190,6 +252,23 @@ export function SophonWorkbench() {
       </div>
     </main>
   );
+}
+
+function GreekGlyph({ children, className }: { children: string; className?: string }) {
+  return <span aria-hidden="true" className={cn("font-serif text-base leading-none", className)}>{children}</span>;
+}
+
+function getRuntimeStatus(capabilities: RuntimeCapabilities | null, model: ModelManifest) {
+  if (!capabilities) {
+    return { label: "Probing runtime", className: "text-white/45", dotClassName: "bg-white/35" };
+  }
+  if (capabilities.webgpu && model.providers.includes("webgpu")) {
+    return { label: "WebGPU online", className: "text-sophon-verified", dotClassName: "bg-sophon-verified shadow-[0_0_10px_var(--sophon-verified)]" };
+  }
+  if (capabilities.wasm && model.providers.includes("wasm")) {
+    return { label: "WASM fallback", className: "text-sophon-warning", dotClassName: "bg-sophon-warning shadow-[0_0_10px_var(--sophon-warning)]" };
+  }
+  return { label: "Provider unavailable", className: "text-destructive", dotClassName: "bg-destructive" };
 }
 
 function formatRate(value: number | null) {

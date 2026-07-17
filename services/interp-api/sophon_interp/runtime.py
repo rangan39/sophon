@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from threading import Lock
 
 import torch
 from transformer_lens import HookedTransformer
 
-from sophon_interp.schemas import AttentionEdge, Feature, LayerState, Prediction, PromptRun, RunRequest, Token
+from sophon_interp.schemas import AttentionEdge, Feature, LayerState, Prediction, PromptRun, RunRequest, Token, TokenKind
 
 ALLOWED_MODELS = {"gpt2-small"}
+MODEL_RUN_LOCK = Lock()
 
 
 def get_torch_device() -> str:
@@ -56,7 +58,7 @@ def positive_normalize(values: torch.Tensor) -> list[float]:
     return [round(float(item), 6) for item in scaled.reshape(-1)]
 
 
-def special_token_kind(model: HookedTransformer, token_id: int, role: str = "token") -> str:
+def special_token_kind(model: HookedTransformer, token_id: int, role: str = "token") -> TokenKind:
     tokenizer = model.tokenizer
     if tokenizer is None:
         return "normal"
@@ -71,7 +73,7 @@ def special_token_kind(model: HookedTransformer, token_id: int, role: str = "tok
     return "normal"
 
 
-def token_display_text(kind: str, text: str) -> str | None:
+def token_display_text(kind: TokenKind, text: str) -> str | None:
     if kind == "bos":
         return "BOS"
     if kind == "eos":
@@ -165,6 +167,11 @@ def direct_logit_attribution(model: HookedTransformer, residual: torch.Tensor, t
 
 
 def extract_prompt_run(request: RunRequest) -> PromptRun:
+    with MODEL_RUN_LOCK:
+        return _extract_prompt_run(request)
+
+
+def _extract_prompt_run(request: RunRequest) -> PromptRun:
     model = get_model(request.model)
 
     with torch.no_grad():

@@ -39,7 +39,7 @@ export type ModelManifest = {
   providers: readonly ModelProvider[];
 };
 
-export const MODEL_REGISTRY: readonly ModelManifest[] = [
+export const MODEL_REGISTRY = [
   {
     id: "tiny-gpt2",
     label: "Tiny GPT-2",
@@ -58,7 +58,7 @@ export const MODEL_REGISTRY: readonly ModelManifest[] = [
       quantization: "fp32",
       sizeLabel: "15 MB",
       sizeBytes: 15_000_000,
-      contextLength: 128
+      contextLength: 64
     },
     graph: {
       adapter: "full-context",
@@ -74,7 +74,7 @@ export const MODEL_REGISTRY: readonly ModelManifest[] = [
     family: "smollm",
     description: "Small instruction model; repository compatibility is not yet certified by Sophon.",
     verification: "experimental",
-    source: { kind: "huggingface", repo: "onnx-community/SmolLM2-135M-Instruct-ONNX", revision: "main" },
+    source: { kind: "huggingface", repo: "onnx-community/SmolLM2-135M-Instruct-ONNX", revision: "b8a5c0f183b78c55955a5364f610c36668b5e681" },
     format: { weights: "onnx", quantization: "q4", sizeLabel: "~140 MB", sizeBytes: null, contextLength: null },
     graph: { adapter: "transformers-js", generation: "with-past", inputNames: [], outputNames: [] },
     providers: ["webgpu", "wasm"]
@@ -85,7 +85,7 @@ export const MODEL_REGISTRY: readonly ModelManifest[] = [
     family: "smollm",
     description: "Larger SmolLM2 variant; repository compatibility is not yet certified by Sophon.",
     verification: "experimental",
-    source: { kind: "huggingface", repo: "HuggingFaceTB/SmolLM2-360M-Instruct", revision: "main" },
+    source: { kind: "huggingface", repo: "HuggingFaceTB/SmolLM2-360M-Instruct", revision: "a10cc1512eabd3dde888204e902eca88bddb4951" },
     format: { weights: "onnx", quantization: "q4", sizeLabel: "~360 MB", sizeBytes: null, contextLength: null },
     graph: { adapter: "transformers-js", generation: "with-past", inputNames: [], outputNames: [] },
     providers: ["webgpu", "wasm"]
@@ -96,7 +96,7 @@ export const MODEL_REGISTRY: readonly ModelManifest[] = [
     family: "qwen",
     description: "Coding-focused model; repository compatibility is not yet certified by Sophon.",
     verification: "experimental",
-    source: { kind: "huggingface", repo: "onnx-community/Qwen2.5-Coder-0.5B-Instruct", revision: "main" },
+    source: { kind: "huggingface", repo: "onnx-community/Qwen2.5-Coder-0.5B-Instruct", revision: "f0292f665fd307846ff3c318a91a1bc29d091492" },
     format: { weights: "onnx", quantization: "q4", sizeLabel: "~500 MB", sizeBytes: null, contextLength: null },
     graph: { adapter: "transformers-js", generation: "with-past", inputNames: [], outputNames: [] },
     providers: ["webgpu"]
@@ -107,7 +107,7 @@ export const MODEL_REGISTRY: readonly ModelManifest[] = [
     family: "llama",
     description: "Desktop-class model; repository compatibility is not yet certified by Sophon.",
     verification: "experimental",
-    source: { kind: "huggingface", repo: "onnx-community/Llama-3.2-1B-Instruct-ONNX", revision: "main" },
+    source: { kind: "huggingface", repo: "onnx-community/Llama-3.2-1B-Instruct-ONNX", revision: "14007543b6dc92de88daf96a9aa85d2f95ace6ef" },
     format: { weights: "onnx", quantization: "q4", sizeLabel: "~1 GB", sizeBytes: null, contextLength: null },
     graph: { adapter: "transformers-js", generation: "with-past", inputNames: [], outputNames: [] },
     providers: ["webgpu"]
@@ -118,17 +118,23 @@ export const MODEL_REGISTRY: readonly ModelManifest[] = [
     family: "qwen",
     description: "Large experimental model intended for high-memory desktop GPUs.",
     verification: "experimental",
-    source: { kind: "huggingface", repo: "onnx-community/Qwen3-1.7B-ONNX", revision: "main" },
+    source: { kind: "huggingface", repo: "onnx-community/Qwen3-1.7B-ONNX", revision: "cc6a06a21d614e9b8e92a6adfab1074d4e7d2438" },
     format: { weights: "onnx", quantization: "q4", sizeLabel: "~1.7 GB", sizeBytes: null, contextLength: null },
     graph: { adapter: "transformers-js", generation: "with-past", inputNames: [], outputNames: [] },
     providers: ["webgpu"]
   }
-] as const;
+] as const satisfies readonly [ModelManifest, ...ModelManifest[]];
 
 export const DEFAULT_ONNX_MODEL = MODEL_REGISTRY[0];
 
-export function getModelDefinition(id = DEFAULT_ONNX_MODEL.id) {
+export function getModelDefinition(id: string = DEFAULT_ONNX_MODEL.id) {
   return MODEL_REGISTRY.find((model) => model.id === id) ?? DEFAULT_ONNX_MODEL;
+}
+
+export function requireModelDefinition(id: string = DEFAULT_ONNX_MODEL.id) {
+  const model = MODEL_REGISTRY.find((candidate) => candidate.id === id);
+  if (!model) throw new Error(`Unknown model identifier: ${id}`);
+  return model;
 }
 
 export function getModelRepo(model: ModelManifest) {

@@ -1,4 +1,6 @@
-import { getModelDefinition, getModelRepo, type ModelManifest, type ModelProvider } from "@/lib/onnx-models";
+import type { PreTrainedTokenizer, TextGenerationPipeline } from "@huggingface/transformers";
+import type { InferenceSession, Tensor } from "onnxruntime-web";
+import { getModelRepo, requireModelDefinition, type ModelManifest, type ModelProvider } from "@/lib/onnx-models";
 import { calculateGenerationTiming } from "@/lib/generation-metrics";
 import { decodeTokenPieces, markActiveContext } from "@/lib/token-display";
 import type {
@@ -16,32 +18,17 @@ import type {
   RuntimeCapabilities
 } from "@/lib/onnx-types";
 
-type TensorLike = { data: ArrayLike<number | bigint>; dims: readonly number[] };
-type TokenizerLike = {
-  encode: (text: string, options?: Record<string, unknown>) => number[];
-  decode: (tokenIds: number[] | bigint[], options?: Record<string, unknown>) => string;
-  pad_token_id?: number | null;
-  eos_token_id?: number | null;
-  all_special_ids?: Array<number | bigint>;
-};
-type SessionLike = {
-  inputNames?: string[];
-  outputNames?: string[];
-  run: (feeds: Record<string, unknown>) => Promise<Record<string, TensorLike>>;
-  release?: () => Promise<void> | void;
-};
+type TensorLike = { data: ArrayLike<number | bigint>; dims: readonly number[]; type: "float16" | "float32" | "float64" };
 type LocalRuntime = {
-  tokenizer: TokenizerLike;
-  session: SessionLike;
-  tensor: new (type: "int64", data: BigInt64Array, dims: number[]) => unknown;
+  tokenizer: PreTrainedTokenizer;
+  session: InferenceSession;
+  tensor: typeof Tensor;
   sequenceLength: number;
 };
-type PipelineLike = ((prompt: string, options: Record<string, unknown>) => Promise<unknown>) & {
-  tokenizer?: TokenizerLike;
-  dispose?: () => Promise<void> | void;
-};
+type PipelineLike = TextGenerationPipeline;
 type Metadata = { base_model: string; sequence_length: number; output_names: string[] };
 
+const LOCAL_METADATA_TIMEOUT_MS = 30_000;
 const localRuntimeCache = new Map<string, Promise<LocalRuntime>>();
 const pipelineCache = new Map<string, Promise<PipelineLike>>();
 
@@ -55,7 +42,7 @@ export function getRuntimeCapabilities(): RuntimeCapabilities {
 }
 
 export async function loadOnnxModel(modelId: string, onLog?: (event: OnnxLogEvent) => void): Promise<ModelLoadResult> {
-  const model = getModelDefinition(modelId);
+  const model = requireModelDefinition(modelId);
   const provider = resolveProvider(model);
   const log = onLog ?? (() => undefined);
   const cacheKey = `${model.id}:${provider}`;
@@ -76,7 +63,10 @@ export async function loadOnnxModel(modelId: string, onLog?: (event: OnnxLogEven
 }
 
 export async function runOnnxTextModel(prompt: string, options: OnnxRunOptions = {}): Promise<OnnxRunResponse> {
-  const model = getModelDefinition(options.modelId);
+  const model = requireModelDefinition(options.modelId);
+  if (!prompt.trim()) {
+    return { ok: false, code: "REQUEST_FAILED", message: "Enter a prompt before running the model." };
+  }
   if (model.source.kind === "local") return runLocalModel(prompt, model, options);
   return runTransformersJsModel(prompt, model, options);
 }
@@ -217,7 +207,7 @@ async function runLocalModel(prompt: string, model: ModelManifest, options: Onnx
     const allTokenIds = [...promptTokenIds];
     const generatedTokens: OnnxToken[] = [];
     const tokenTimestamps: number[] = [];
-    let lastOutputs: Record<string, TensorLike> = {};
+    let lastOutputs: InferenceSession.ReturnType = {};
     const eosTokenId = runtime.tokenizer.eos_token_id ?? null;
 
     emitTelemetry(options, "prefill", generationStartedAt, tokenTimestamps, allPromptTokenIds.length, promptTokenIds.length);
@@ -231,8 +221,9 @@ async function runLocalModel(prompt: string, model: ModelManifest, options: Onnx
         input_ids: new runtime.tensor("int64", toBigInt64(inputIds), [1, inputIds.length])
       });
 
-      const logits = lastOutputs.logits ?? lastOutputs[Object.keys(lastOutputs)[0]];
-      if (!logits) throw new Error("The ONNX model did not return a logits output.");
+      const firstOutputName = Object.keys(lastOutputs)[0];
+      const logits = lastOutputs.logits ?? (firstOutputName ? lastOutputs[firstOutputName] : undefined);
+      if (!isNumericTensor(logits)) throw new Error("The ONNX model did not return a numeric logits tensor.");
       const nextTokenId = sampleNextToken(logits, context.length - 1, temperature, topK);
       allTokenIds.push(nextTokenId);
       if (eosTokenId !== null && nextTokenId === eosTokenId) break;
@@ -283,9 +274,9 @@ async function runLocalModel(prompt: string, model: ModelManifest, options: Onnx
         outputTokenCount: generatedTokens.length,
         tokensPerSecond
       },
-      inputNames: runtime.session.inputNames ?? [...model.graph.inputNames],
-      outputNames: runtime.session.outputNames ?? Object.keys(lastOutputs),
-      outputShapes: Object.fromEntries(Object.entries(lastOutputs).map(([name, tensor]) => [name, [...tensor.dims]]))
+      inputNames: [...runtime.session.inputNames],
+      outputNames: [...runtime.session.outputNames],
+      outputShapes: Object.fromEntries(Object.entries(lastOutputs).map(([name, value]) => [name, readDims(value)]))
     };
     log({ level: "success", message: "Generation complete", detail: `${result.outputTokenCount} tokens · ${formatRate(timing.decodeTokensPerSecond)}`, durationMs: Math.round(generationMs), phase: "runtime" });
     return { ok: true, result };
@@ -305,7 +296,6 @@ async function runTransformersJsModel(prompt: string, model: ModelManifest, opti
     const provider = resolveProvider(model);
     const generator = await getPipeline(model, provider, log);
     const modelLoadMs = performance.now() - loadStartedAt;
-    if (!generator.tokenizer) throw new Error(`${model.label} did not expose a tokenizer, so Sophon cannot report valid token metrics.`);
     const generationStartedAt = performance.now();
     const inputTokenIds = generator.tokenizer.encode(prompt, { add_special_tokens: false });
     const inputTokens: OnnxInputToken[] = markActiveContext(decodeTokens(generator.tokenizer, inputTokenIds), 0);
@@ -313,7 +303,7 @@ async function runTransformersJsModel(prompt: string, model: ModelManifest, opti
     const streamedTokenIds: number[] = [];
     const specialTokenIds = new Set((generator.tokenizer.all_special_ids ?? []).map(Number));
     const { TextStreamer } = await import("@huggingface/transformers");
-    const streamer = new TextStreamer(generator.tokenizer as never, {
+    const streamer = new TextStreamer(generator.tokenizer, {
       skip_prompt: true,
       skip_special_tokens: true,
       callback_function: () => undefined,
@@ -414,13 +404,20 @@ async function loadLocalRuntime(model: ModelManifest, log: (event: OnnxLogEvent)
   const [{ AutoTokenizer, env }, ort] = await Promise.all([import("@huggingface/transformers"), import("onnxruntime-web/webgpu")]);
   env.allowLocalModels = true;
   env.allowRemoteModels = true;
-  const metadataResponse = await fetch(model.source.metadataUrl);
+  const metadataResponse = await fetch(model.source.metadataUrl, {
+    signal: AbortSignal.timeout(LOCAL_METADATA_TIMEOUT_MS)
+  });
   if (!metadataResponse.ok) throw new Error(`Could not load model metadata (${metadataResponse.status}).`);
-  const metadata = await metadataResponse.json() as Metadata;
-  const tokenizer = await AutoTokenizer.from_pretrained(model.source.baseUrl) as unknown as TokenizerLike;
-  const session = await ort.InferenceSession.create(model.source.modelPath, { executionProviders: ["webgpu"] }) as unknown as SessionLike;
+  const metadataValue: unknown = await metadataResponse.json();
+  if (!isMetadata(metadataValue)) throw new Error("The bundled model metadata is invalid.");
+  const metadata = metadataValue;
+  if (model.format.contextLength !== null && metadata.sequence_length !== model.format.contextLength) {
+    throw new Error(`The ${model.label} manifest and exported graph disagree on context length.`);
+  }
+  const tokenizer = await AutoTokenizer.from_pretrained(model.source.baseUrl);
+  const session = await ort.InferenceSession.create(model.source.modelPath, { executionProviders: ["webgpu"] });
   log({ level: "success", message: "ONNX session ready", detail: `${metadata.base_model} · ${metadata.sequence_length} token context`, durationMs: Math.round(performance.now() - startedAt), phase: "runtime" });
-  return { tokenizer, session, tensor: ort.Tensor as unknown as LocalRuntime["tensor"], sequenceLength: metadata.sequence_length };
+  return { tokenizer, session, tensor: ort.Tensor, sequenceLength: metadata.sequence_length };
 }
 
 async function getPipeline(model: ModelManifest, provider: ModelProvider, log: (event: OnnxLogEvent) => void) {
@@ -432,10 +429,7 @@ async function getPipeline(model: ModelManifest, provider: ModelProvider, log: (
     return cached;
   }
   log({ level: "info", message: "Loading experimental model", detail: `${model.source.repo}@${model.source.revision}`, phase: "download" });
-  const loading = import("@huggingface/transformers").then(async (transformers) => {
-    const pipeline = (transformers as unknown as {
-      pipeline: (task: string, repo: string, options: Record<string, unknown>) => Promise<PipelineLike>;
-    }).pipeline;
+  const loading = import("@huggingface/transformers").then(({ pipeline }) => {
     return pipeline("text-generation", model.source.kind === "huggingface" ? model.source.repo : "", {
       device: provider,
       dtype: model.format.quantization,
@@ -496,7 +490,7 @@ function formatRate(tokensPerSecond: number | null) {
   return tokensPerSecond === null ? "decode rate pending" : `${tokensPerSecond.toFixed(1)} decode tok/s`;
 }
 
-function decodeTokens(tokenizer: TokenizerLike, tokenIds: readonly number[]): OnnxToken[] {
+function decodeTokens(tokenizer: PreTrainedTokenizer, tokenIds: readonly number[]): OnnxToken[] {
   return decodeTokenPieces(tokenIds, (ids) => tokenizer.decode(ids, {
     clean_up_tokenization_spaces: false,
     skip_special_tokens: false
@@ -539,4 +533,31 @@ function median(values: Array<number | null>) {
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
+}
+
+function isMetadata(value: unknown): value is Metadata {
+  if (!isRecord(value)) return false;
+  return typeof value.base_model === "string"
+    && Number.isSafeInteger(value.sequence_length)
+    && Number(value.sequence_length) > 0
+    && Number(value.sequence_length) <= 32_768
+    && Array.isArray(value.output_names)
+    && value.output_names.every((name) => typeof name === "string");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isNumericTensor(value: unknown): value is TensorLike {
+  if (!isRecord(value) || (value.type !== "float16" && value.type !== "float32" && value.type !== "float64")) return false;
+  return Array.isArray(value.dims)
+    && value.dims.every((dimension) => Number.isSafeInteger(dimension) && dimension >= 0)
+    && isRecord(value.data)
+    && typeof value.data.length === "number";
+}
+
+function readDims(value: unknown) {
+  if (!isRecord(value) || !Array.isArray(value.dims)) return [];
+  return value.dims.filter((dimension): dimension is number => typeof dimension === "number" && Number.isFinite(dimension));
 }

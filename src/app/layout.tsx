@@ -1,6 +1,5 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Cormorant_Garamond } from "next/font/google";
-import { TooltipProvider } from "@/components/ui/tooltip";
 import "./globals.css";
 
 const cormorant = Cormorant_Garamond({
@@ -11,8 +10,19 @@ const cormorant = Cormorant_Garamond({
 });
 
 export const metadata: Metadata = {
-  title: "Sophon",
-  description: "A mechanistic interpretability visualization workbench"
+  applicationName: "Sophon",
+  title: {
+    default: "Sophon",
+    template: "%s · Sophon"
+  },
+  description: "A private, browser-based ONNX language model workbench powered by WebGPU.",
+  category: "developer tools"
+};
+
+export const viewport: Viewport = {
+  colorScheme: "dark",
+  themeColor: "#090a0d",
+  viewportFit: "cover"
 };
 
 export default function RootLayout({
@@ -22,8 +32,8 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={cormorant.variable}>
-        <TooltipProvider delayDuration={250}>{children}</TooltipProvider>
+      <body className={`${cormorant.variable} antialiased`}>
+        {children}
       </body>
     </html>
   );
