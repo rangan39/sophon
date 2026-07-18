@@ -1,4 +1,4 @@
-import type { PreTrainedTokenizer, TextGenerationPipeline } from "@huggingface/transformers";
+import type { PreTrainedTokenizer, ProgressInfo, TextGenerationPipeline } from "@huggingface/transformers";
 import { requireModelDefinition, resolveModelProvider, type ModelManifest, type ModelProvider } from "@/lib/onnx-models";
 import { calculateGenerationTiming, createGenerationTelemetryGate } from "@/lib/generation-metrics";
 import { decodeTokenPieces, markActiveContext, sliceTokenPiecesByTextRange } from "@/lib/token-display";
@@ -183,6 +183,15 @@ async function getPipeline(model: ModelManifest, provider: ModelProvider, log: (
   }
   const source = model.source.kind === "local" ? model.source.baseUrl : model.source.repo;
   const sourceDetail = model.source.kind === "local" ? source : `${source}@${model.source.revision}`;
+  let lastProgress = -1;
+  const progressCallback = (event: ProgressInfo) => {
+    if (event.status !== "progress_total" || !Number.isFinite(event.loaded) || !Number.isFinite(event.total) || event.total <= 0) return;
+    const loaded = Math.min(event.total, Math.max(0, event.loaded));
+    const progress = Math.floor(loaded / event.total * 100);
+    if (progress === lastProgress) return;
+    lastProgress = progress;
+    log({ level: "info", message: "Loading model", phase: "download", progress: { loaded, total: event.total } });
+  };
   log({ level: "info", message: "Loading model", detail: sourceDetail, phase: "download" });
   const loading = import("@huggingface/transformers").then(async ({ env, pipeline }) => {
     env.allowLocalModels = model.source.kind === "local";
@@ -193,6 +202,7 @@ async function getPipeline(model: ModelManifest, provider: ModelProvider, log: (
       return await pipeline("text-generation", source, {
         device: provider,
         dtype: model.format.quantization,
+        progress_callback: progressCallback,
         ...(model.source.kind === "huggingface" ? { revision: model.source.revision } : {})
       });
     } finally {

@@ -9,6 +9,7 @@ export type OnnxLogEvent = {
   message: string;
   detail?: string;
   phase?: OnnxRuntimePhase;
+  progress?: { loaded: number; total: number };
   durationMs?: number;
 };
 

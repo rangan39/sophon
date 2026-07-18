@@ -106,13 +106,62 @@ try {
   assert.match(requestedModelUrl, /7fff1be9627e40f0d89c33f406882bdafb56ec90/);
   const loadingSelection = await preloadSelect.evaluate((select) => ({ label: select.selectedOptions[0]?.textContent?.trim(), value: select.value }));
   assert.deepEqual(loadingSelection, { label: "Tiny Aya Global 3.35B · non-commercial · downloading", value: "tiny-aya-global" });
+  const progressBar = activePage.getByRole("progressbar", { name: "Loading Tiny Aya Global 3.35B · non-commercial", exact: true });
+  await assertVisible(progressBar, "model download progress bar");
+  assert.equal(await progressBar.getAttribute("aria-valuenow"), null, "Progress must remain indeterminate until byte totals arrive.");
+  assert.equal(await preloadSelect.isEnabled(), true, "The model selector must remain enabled so another selection can cancel the download.");
   await activePage.getByRole("textbox", { name: "Message Sophon", exact: true }).fill("Preload gate");
   assert.equal(await preloadSend.isDisabled(), true, "Send must remain disabled while the selected model downloads.");
   await blockedModelRoute.abort("blockedbyclient");
   await activePage.locator("#prompt-error").waitFor({ state: "visible", timeout: timeoutMs });
+  await progressBar.waitFor({ state: "detached", timeout: timeoutMs });
   assert.equal(await preloadSend.isEnabled(), true, "A failed preload must leave generation available for an explicit retry.");
   await preloadContext.close();
   console.log("✓ Dropdown selection starts the pinned download and gates generation");
+
+  const progressContext = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  await progressContext.addInitScript(() => {
+    const requests = [];
+    Object.defineProperty(window, "__sophonWorkerRequests", { value: requests });
+    class FakeWorker {
+      constructor() {
+        this.onmessage = null;
+        this.terminated = false;
+      }
+      postMessage(request) {
+        requests.push(request);
+        if (request.type === "capabilities") queueMicrotask(() => this.respond({ type: "complete", requestId: request.requestId, result: { webgpu: true, wasm: true, crossOriginIsolated: false } }));
+        if (request.type === "preload") queueMicrotask(() => {
+          this.respond({ type: "log", requestId: request.requestId, event: { level: "info", message: "Loading model", phase: "download", progress: { loaded: 25, total: 100 } } });
+          if (request.modelId === "tiny-gpt2") this.respond({ type: "complete", requestId: request.requestId, result: { ok: true } });
+          else window.__finishPreload = () => this.respond({ type: "complete", requestId: request.requestId, result: { ok: true } });
+        });
+      }
+      respond(data) {
+        if (!this.terminated) this.onmessage?.({ data });
+      }
+      terminate() {
+        this.terminated = true;
+      }
+    }
+    Object.defineProperty(window, "Worker", { configurable: true, value: FakeWorker });
+  });
+  activePage = await progressContext.newPage();
+  await openPage(activePage);
+  const progressSelect = activePage.locator('select[aria-label^="Choose model"]');
+  await activePage.waitForFunction(() => [...document.querySelectorAll('select option')].some((option) => option.value === "tiny-aya-global" && option.textContent?.endsWith("experimental")), undefined, { timeout: timeoutMs });
+  await progressSelect.selectOption("tiny-aya-global");
+  await activePage.waitForFunction(() => window.__sophonWorkerRequests?.some((request) => request.type === "preload" && request.modelId === "tiny-aya-global"), undefined, { timeout: timeoutMs });
+  const determinateProgress = activePage.getByRole("progressbar", { name: "Loading Tiny Aya Global 3.35B · non-commercial", exact: true });
+  await assertVisible(determinateProgress, "determinate model download progress bar");
+  assert.equal(await determinateProgress.getAttribute("aria-valuenow"), "25");
+  assert.equal(await determinateProgress.getAttribute("aria-valuetext"), "25 B of 100 B loaded");
+  assert.equal((await activePage.evaluate(() => window.__sophonWorkerRequests)).some((request) => request.type === "generate"), false);
+  await activePage.evaluate(() => window.__finishPreload());
+  await determinateProgress.waitFor({ state: "detached", timeout: timeoutMs });
+  await activePage.getByText("Model ready", { exact: true }).waitFor({ state: "visible", timeout: timeoutMs });
+  await progressContext.close();
+  console.log("✓ Aggregate byte progress renders determinate state and clears at readiness");
 
   const fallbackContext = await browser.newContext({ viewport: { width: 320, height: 800 } });
   await fallbackContext.addInitScript(() => Object.defineProperty(Navigator.prototype, "storage", { configurable: true, get: () => undefined }));

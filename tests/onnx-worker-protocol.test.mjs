@@ -82,6 +82,10 @@ test("validates worker events before dispatching them", () => {
       p95InterTokenLatencyMs: null
     }
   }), true);
+  assert.equal(isWorkerResponse({ type: "log", requestId: "request-1", event: { level: "info", message: "Loading", phase: "download", progress: { loaded: 25, total: 100 } } }), true);
+  for (const progress of [{ loaded: -1, total: 100 }, { loaded: 101, total: 100 }, { loaded: 0, total: 0 }, { loaded: Number.NaN, total: 100 }]) {
+    assert.equal(isWorkerResponse({ type: "log", requestId: "request-1", event: { level: "info", message: "Loading", progress } }), false);
+  }
   assert.equal(isWorkerResponse({ type: "error", requestId: "request-1" }), false);
 });
 
