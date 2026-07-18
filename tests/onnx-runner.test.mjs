@@ -3,7 +3,8 @@ import { register } from "node:module";
 import test from "node:test";
 
 register("./alias-loader.mjs", import.meta.url);
-const { prepareGenerationInput, readGeneratedText, runOnnxTextModel } = await import("../src/lib/onnx-runner.ts");
+const { env, pipelineCalls, pipelineRemotePathTemplates } = await import("@huggingface/transformers");
+const { preloadOnnxModel, prepareGenerationInput, readGeneratedText, runOnnxTextModel } = await import("../src/lib/onnx-runner.ts");
 
 test("prepares GPT-2 turns as a completion prompt with an assistant cue", () => {
   assert.equal(prepareGenerationInput("gpt2", [
@@ -48,4 +49,26 @@ test("returns typed cancellation before loading a model for an aborted request",
     code: "CANCELLED",
     message: "Generation cancelled."
   });
+});
+
+test("preloads and reuses the pinned Tiny Aya WebGPU pipeline without generating", async () => {
+  Object.defineProperty(globalThis, "navigator", { configurable: true, value: { gpu: { requestAdapter: async () => ({}) } } });
+  pipelineCalls.length = 0;
+  pipelineRemotePathTemplates.length = 0;
+  const logs = [];
+  await preloadOnnxModel("tiny-aya-global", (event) => logs.push(event));
+  await preloadOnnxModel("tiny-aya-global", (event) => logs.push(event));
+
+  assert.equal(pipelineCalls.length, 1);
+  assert.deepEqual(pipelineCalls[0], [
+    "text-generation",
+    "onnx-community/tiny-aya-global-ONNX",
+    { device: "webgpu", dtype: "q4f16", revision: "7fff1be9627e40f0d89c33f406882bdafb56ec90" }
+  ]);
+  assert.equal(pipelineRemotePathTemplates[0], "{model}/resolve/7fff1be9627e40f0d89c33f406882bdafb56ec90/");
+  assert.equal(env.remotePathTemplate, "{model}/resolve/{revision}/");
+  assert.equal(env.allowLocalModels, false);
+  assert.equal(env.allowRemoteModels, true);
+  assert.equal(logs[0]?.phase, "download");
+  assert.match(logs.at(-1)?.message ?? "", /cached model pipeline/i);
 });

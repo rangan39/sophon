@@ -63,17 +63,9 @@ export async function runOnnxTextModel(messages: readonly ChatTurn[], options: O
   return runTransformersJsModel(normalized, model, options);
 }
 
-export async function unloadOnnxModel(modelId?: string) {
-  const pipelineKeys = modelId
-    ? [...pipelineCache.keys()].filter((key) => key.startsWith(`${modelId}:`))
-    : [...pipelineCache.keys()];
-  for (const key of pipelineKeys) {
-    const pipelinePromise = pipelineCache.get(key);
-    pipelineCache.delete(key);
-    if (!pipelinePromise) continue;
-    const pipeline = await pipelinePromise.catch(() => null);
-    await pipeline?.dispose?.();
-  }
+export async function preloadOnnxModel(modelId: string, onLog: (event: OnnxLogEvent) => void = () => undefined) {
+  const model = requireModelDefinition(modelId);
+  await getPipeline(model, await resolveProvider(model), onLog);
 }
 
 async function runTransformersJsModel(
@@ -192,14 +184,20 @@ async function getPipeline(model: ModelManifest, provider: ModelProvider, log: (
   const source = model.source.kind === "local" ? model.source.baseUrl : model.source.repo;
   const sourceDetail = model.source.kind === "local" ? source : `${source}@${model.source.revision}`;
   log({ level: "info", message: "Loading model", detail: sourceDetail, phase: "download" });
-  const loading = import("@huggingface/transformers").then(({ env, pipeline }) => {
-    env.allowLocalModels = true;
-    env.allowRemoteModels = true;
-    return pipeline("text-generation", source, {
-      device: provider,
-      dtype: model.format.quantization,
-      ...(model.source.kind === "huggingface" ? { revision: model.source.revision } : {})
-    });
+  const loading = import("@huggingface/transformers").then(async ({ env, pipeline }) => {
+    env.allowLocalModels = model.source.kind === "local";
+    env.allowRemoteModels = model.source.kind === "huggingface";
+    const remotePathTemplate = env.remotePathTemplate;
+    if (model.source.kind === "huggingface") env.remotePathTemplate = `{model}/resolve/${model.source.revision}/`;
+    try {
+      return await pipeline("text-generation", source, {
+        device: provider,
+        dtype: model.format.quantization,
+        ...(model.source.kind === "huggingface" ? { revision: model.source.revision } : {})
+      });
+    } finally {
+      env.remotePathTemplate = remotePathTemplate;
+    }
   }).catch((error) => {
     pipelineCache.delete(cacheKey);
     throw error;

@@ -58,6 +58,12 @@ test("accepts targeted cancellation requests and validates acknowledgements", ()
   }), false);
 });
 
+test("accepts explicit model preloads and validates completion", () => {
+  assert.equal(isWorkerRequest({ type: "preload", requestId: "preload-1", modelId: "tiny-aya-global" }), true);
+  assert.equal(isWorkerRequest({ type: "preload", requestId: "preload-2", modelId: "" }), false);
+  assert.equal(isWorkerResult("preload", { ok: true }), true);
+});
+
 test("validates worker events before dispatching them", () => {
   assert.equal(isWorkerResponse({
     type: "telemetry",

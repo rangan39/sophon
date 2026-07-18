@@ -17,7 +17,7 @@ type WorkerRequestInputMap = {
     options: Pick<OnnxRunOptions, "maxNewTokens" | "temperature" | "topK">;
   };
   cancel: { type: "cancel"; targetRequestId: string };
-  unload: { type: "unload"; modelId?: string };
+  preload: { type: "preload"; modelId: string };
 };
 
 export type WorkerRequestType = keyof WorkerRequestInputMap;
@@ -30,7 +30,7 @@ export type WorkerResultMap = {
   capabilities: RuntimeCapabilities;
   generate: OnnxRunResponse;
   cancel: GenerationCancelResult;
-  unload: { ok: true };
+  preload: { ok: true };
 };
 
 export type WorkerResponse =
@@ -44,7 +44,7 @@ export function isWorkerRequest(value: unknown): value is WorkerRequest {
 
   if (value.type === "capabilities") return true;
   if (value.type === "cancel") return typeof value.targetRequestId === "string" && value.targetRequestId.length > 0;
-  if (value.type === "unload") return value.modelId === undefined || typeof value.modelId === "string";
+  if (value.type === "preload") return typeof value.modelId === "string" && value.modelId.length > 0;
   if (value.type === "generate") {
     return isChat(value.messages)
       && typeof value.modelId === "string"

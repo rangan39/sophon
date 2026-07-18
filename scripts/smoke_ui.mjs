@@ -45,7 +45,7 @@ try {
 
   await activePage.waitForFunction(() => {
     const options = document.querySelectorAll('select[aria-label^="Choose model"] option');
-    return options.length > 0 && [...options].every((option) => !option.textContent?.includes("checking compatibility"));
+    return options.length > 0 && [...options].every((option) => !/(checking compatibility|downloading)/.test(option.textContent ?? ""));
   }, undefined, { timeout: timeoutMs });
   const options = await modelSelect.locator("option").evaluateAll((nodes) => nodes.map((option) => ({
     disabled: option.disabled,
@@ -80,6 +80,40 @@ try {
   if (runtimeErrors.length > 0) throw new Error("Runtime browser errors were detected.");
   await desktopContext.close();
 
+  const preloadContext = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  let blockedModelRoute;
+  let modelRequestTimeout;
+  let resolveModelRequest;
+  const modelRequest = new Promise((resolve) => { resolveModelRequest = resolve; });
+  await preloadContext.route("https://**/*", (route) => {
+    const requestUrl = route.request().url();
+    if (requestUrl.includes("onnx-community/tiny-aya-global-ONNX")) {
+      blockedModelRoute = route;
+      resolveModelRequest(requestUrl);
+      return;
+    }
+    void route.abort("blockedbyclient");
+  });
+  activePage = await preloadContext.newPage();
+  await openPage(activePage);
+  const preloadSelect = activePage.locator('select[aria-label^="Choose model"]');
+  const preloadSend = activePage.getByRole("button", { name: "Send message", exact: true });
+  await preloadSelect.waitFor({ state: "visible", timeout: timeoutMs });
+  await activePage.waitForFunction(() => [...document.querySelectorAll('select option')].some((option) => option.value === "tiny-aya-global" && option.textContent?.endsWith("experimental") && !option.disabled) && document.querySelector('select')?.value === "tiny-gpt2", undefined, { timeout: timeoutMs });
+  await preloadSelect.selectOption("tiny-aya-global");
+  const requestedModelUrl = await Promise.race([modelRequest, new Promise((_, reject) => { modelRequestTimeout = setTimeout(() => reject(new Error("Tiny Aya preload did not request its pinned repository.")), timeoutMs); })]);
+  clearTimeout(modelRequestTimeout);
+  assert.match(requestedModelUrl, /7fff1be9627e40f0d89c33f406882bdafb56ec90/);
+  const loadingSelection = await preloadSelect.evaluate((select) => ({ label: select.selectedOptions[0]?.textContent?.trim(), value: select.value }));
+  assert.deepEqual(loadingSelection, { label: "Tiny Aya Global 3.35B · non-commercial · downloading", value: "tiny-aya-global" });
+  await activePage.getByRole("textbox", { name: "Message Sophon", exact: true }).fill("Preload gate");
+  assert.equal(await preloadSend.isDisabled(), true, "Send must remain disabled while the selected model downloads.");
+  await blockedModelRoute.abort("blockedbyclient");
+  await activePage.locator("#prompt-error").waitFor({ state: "visible", timeout: timeoutMs });
+  assert.equal(await preloadSend.isEnabled(), true, "A failed preload must leave generation available for an explicit retry.");
+  await preloadContext.close();
+  console.log("✓ Dropdown selection starts the pinned download and gates generation");
+
   const fallbackContext = await browser.newContext({ viewport: { width: 320, height: 800 } });
   await fallbackContext.addInitScript(() => Object.defineProperty(Navigator.prototype, "storage", { configurable: true, get: () => undefined }));
   activePage = await fallbackContext.newPage();
@@ -110,6 +144,7 @@ async function openPage(page) {
 }
 
 async function assertVisible(locator, label) {
+  await locator.waitFor({ state: "visible", timeout: timeoutMs });
   assert.equal(await locator.count(), 1, `Expected exactly one ${label}.`);
   assert.equal(await locator.isVisible(), true, `Expected ${label} to be visible.`);
 }

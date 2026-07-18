@@ -7,13 +7,14 @@ import type { RuntimeCapabilities } from "@/lib/onnx-types";
 type SophonModelSelectorProps = {
   capabilities: RuntimeCapabilities | null;
   disabled?: boolean;
+  loading?: boolean;
   modelId: string;
   onSelect: (modelId: string) => void;
 };
 
-export function SophonModelSelector({ capabilities, disabled = false, modelId, onSelect }: SophonModelSelectorProps) {
+export function SophonModelSelector({ capabilities, disabled = false, loading = false, modelId, onSelect }: SophonModelSelectorProps) {
   const selectedModel = getModelDefinition(modelId);
-  const selectedAvailability = modelAvailability(capabilities, selectedModel);
+  const selectedAvailability = loading ? "downloading" : modelAvailability(capabilities, selectedModel);
 
   return (
     <div className="sophon-glass-tile sophon-glass-interactive relative flex h-11 w-[clamp(108px,28vw,160px)] shrink-0 items-center rounded-xl sm:h-9">
@@ -27,7 +28,7 @@ export function SophonModelSelector({ capabilities, disabled = false, modelId, o
         value={modelId}
       >
         {MODEL_REGISTRY.map((model) => {
-          const availability = modelAvailability(capabilities, model);
+          const availability = loading && model.id === modelId ? "downloading" : modelAvailability(capabilities, model);
           return (
             <option className="bg-[#0d0f15] text-[#f4f0e9]" disabled={availability === "unavailable"} key={model.id} value={model.id}>
               {model.label} · {availability}
