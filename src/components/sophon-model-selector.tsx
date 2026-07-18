@@ -17,12 +17,11 @@ export function SophonModelSelector({ capabilities, disabled = false, loading = 
   const selectedAvailability = loading ? "downloading" : modelAvailability(capabilities, selectedModel);
 
   return (
-    <div className="sophon-glass-tile sophon-glass-interactive relative flex h-11 w-[clamp(108px,28vw,160px)] shrink-0 items-center rounded-xl sm:h-9">
-      <span aria-hidden="true" className="pointer-events-none absolute left-2.5 font-serif text-[11px] text-sophon-signal-soft">μ</span>
+    <div className="relative flex h-full w-[132px] shrink-0 items-center border-x border-white/[.1] transition-colors hover:bg-white/[.04] focus-within:bg-white/[.05] sm:w-fit sm:min-w-[10.5rem] sm:max-w-60">
       <select
         aria-describedby="sophon-model-availability"
         aria-label={`Choose model. Current model: ${selectedModel.label}, ${selectedAvailability}.`}
-        className="h-full min-w-0 flex-1 cursor-pointer appearance-none truncate rounded-xl border-0 bg-transparent pl-7 pr-7 font-mono text-[10px] uppercase tracking-[0.06em] text-white/85 outline-none focus-visible:ring-2 focus-visible:ring-sophon-warning disabled:cursor-not-allowed disabled:opacity-50"
+        className="h-full min-w-0 max-w-full flex-auto cursor-pointer appearance-none truncate rounded-none border-0 bg-transparent pl-3 pr-7 font-mono !text-[9px] uppercase tracking-widest text-sophon-signal-soft [field-sizing:content] [font-stretch:normal] [text-shadow:0_0_10px_rgb(255_105_75/.55)] outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sophon-warning disabled:cursor-not-allowed disabled:opacity-50"
         disabled={disabled}
         onChange={(event) => onSelect(event.target.value)}
         value={modelId}

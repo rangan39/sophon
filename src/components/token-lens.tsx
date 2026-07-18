@@ -78,15 +78,11 @@ export const InspectableMessage = memo(function InspectableMessage({ content, me
           ) : (
             <MarkdownMessage content={content} role={role} />
           )}
+          {hasTokens ? <div className={cn("mt-2 flex justify-start border-t pt-1.5", role === "user" ? "border-[#210b07]/20" : "border-white/10")}><TokenModeControl mode={mode} onChange={changeMode} role={role} /></div> : null}
         </BubbleContent>
       </Bubble>
 
-      {(meta || hasTokens) ? (
-        <div className={cn("flex max-w-full flex-wrap items-center gap-x-2 gap-y-1.5 px-1", role === "user" && "flex-row-reverse")}>
-          {meta ? <span className={cn("min-w-0 max-w-full break-words text-xs text-[#aab4c3]", role === "user" && "text-right")}>{meta}</span> : null}
-          {hasTokens ? <TokenModeControl mode={mode} onChange={changeMode} /> : null}
-        </div>
-      ) : null}
+      {meta ? <span className={cn("max-w-full break-words px-1 text-xs text-[#aab4c3]", role === "user" && "text-right")}>{meta}</span> : null}
 
       {mode !== "text" && hasTokens ? (
         <TokenInspector role={role} selection={selection} tokenCount={tokens.length} />
@@ -123,14 +119,13 @@ function MarkdownMessage({ content, role }: Pick<InspectableMessageProps, "conte
   );
 }
 
-function TokenModeControl({ mode, onChange }: { mode: TokenMode; onChange: (mode: TokenMode) => void }) {
+function TokenModeControl({ mode, onChange, role }: { mode: TokenMode; onChange: (mode: TokenMode) => void; role: InspectableMessageProps["role"] }) {
   return (
-    <div aria-label="Message display granularity" className="flex max-w-full shrink-0 flex-wrap items-center rounded-md border border-white/[.16] bg-black/25 p-0.5 font-mono text-[10px] uppercase tracking-[0.1em] text-[#aab4c3]" role="group">
-      <span aria-hidden="true" className="px-2 font-serif text-sm normal-case tracking-normal text-sophon-signal-soft">τ</span>
+    <div aria-label="Message display granularity" className={cn("inline-flex h-7 max-w-full shrink-0 items-stretch overflow-hidden rounded-sm border p-px font-mono text-[9px] uppercase tracking-[0.08em] sm:h-6", role === "user" ? "border-[#210b07]/25 bg-[#210b07]/[.06] text-[#210b07]/65" : "border-white/[.14] bg-black/20 text-[#aab4c3]")} role="group">
       {(["text", "tokens", "words"] as const).map((option) => (
         <button
           aria-pressed={mode === option}
-          className={cn("min-h-11 min-w-11 rounded px-2.5 py-1 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sophon-warning sm:min-h-9 sm:min-w-12", mode === option ? "bg-white/[.12] text-[#f8fafc]" : "hover:bg-white/[.07] hover:text-[#f8fafc]")}
+          className={cn("min-w-0 px-2 py-0 transition-colors focus-visible:z-10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-sophon-warning", role === "user" ? mode === option ? "bg-[#210b07]/15 text-[#210b07]" : "hover:bg-[#210b07]/[.08] hover:text-[#210b07]" : mode === option ? "bg-white/[.12] text-[#f8fafc]" : "hover:bg-white/[.07] hover:text-[#f8fafc]")}
           key={option}
           onClick={() => onChange(option)}
           type="button"
