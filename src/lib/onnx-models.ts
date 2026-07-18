@@ -1,6 +1,6 @@
 export type ModelProvider = "webgpu" | "wasm";
 export type ModelVerification = "verified" | "experimental";
-export type ModelFamily = "gpt2" | "smollm" | "qwen" | "llama";
+export type ModelFamily = "gpt2" | "smollm" | "qwen" | "llama" | "cohere";
 
 const BUNDLED_MODEL_BASE_URL = "/models/v-196cb8befc7d/sshleifer-tiny-gpt2-trace";
 
@@ -24,7 +24,7 @@ export type ModelManifest = {
   verification: ModelVerification;
   source: LocalModelSource | HuggingFaceModelSource;
   format: {
-    quantization: "fp32" | "fp16" | "int8" | "q4";
+    quantization: "fp32" | "fp16" | "int8" | "q4" | "q4f16";
     sizeLabel: string;
     sizeBytes: number | null;
     contextLength: number | null;
@@ -111,7 +111,8 @@ export const MODEL_REGISTRY = [
     source: { kind: "huggingface", repo: "onnx-community/Qwen3-1.7B-ONNX", revision: "cc6a06a21d614e9b8e92a6adfab1074d4e7d2438" },
     format: { quantization: "q4", sizeLabel: "~1.7 GB", sizeBytes: null, contextLength: null },
     providers: ["webgpu"]
-  }
+  },
+  { id: "tiny-aya-global", label: "Tiny Aya Global 3.35B · non-commercial", family: "cohere", description: "67-language model; CC BY-NC 4.0 and Cohere Labs AUP apply.", verification: "experimental", source: { kind: "huggingface", repo: "onnx-community/tiny-aya-global-ONNX", revision: "7fff1be9627e40f0d89c33f406882bdafb56ec90" }, format: { quantization: "q4f16", sizeLabel: "~2.35 GB", sizeBytes: 2_354_413_407, contextLength: 8192 }, providers: ["webgpu"] }
 ] as const satisfies readonly [ModelManifest, ...ModelManifest[]];
 
 export const DEFAULT_ONNX_MODEL = MODEL_REGISTRY[0];

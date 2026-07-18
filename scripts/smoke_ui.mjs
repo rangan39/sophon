@@ -53,6 +53,7 @@ try {
     value: option.value
   })));
   assert.ok(options.every((option) => /(verified|experimental|unavailable)$/.test(option.label)), "Every model option must expose availability.");
+  assert.ok(options.some((option) => option.value === "tiny-aya-global" && /non-commercial · experimental$/.test(option.label)), "Tiny Aya must disclose its license and experimental status without downloading it.");
   const supportedOption = options.find((option) => !option.disabled);
   assert.ok(supportedOption, "At least one model must be compatible with the smoke-test browser.");
   await modelSelect.selectOption(supportedOption.value);
