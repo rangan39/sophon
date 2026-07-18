@@ -1,8 +1,7 @@
 import type {
-  BenchmarkResult,
-  BenchmarkSuite,
+  ChatTurn,
+  GenerationCancelResult,
   GenerationTelemetryEvent,
-  ModelLoadResult,
   OnnxLogEvent,
   OnnxRunOptions,
   OnnxRunResponse,
@@ -11,14 +10,13 @@ import type {
 
 type WorkerRequestInputMap = {
   capabilities: { type: "capabilities" };
-  load: { type: "load"; modelId: string };
   generate: {
     type: "generate";
-    prompt: string;
+    messages: ChatTurn[];
     modelId: string;
     options: Pick<OnnxRunOptions, "maxNewTokens" | "temperature" | "topK">;
   };
-  benchmark: { type: "benchmark"; modelId: string; suite: BenchmarkSuite; measuredRuns: number };
+  cancel: { type: "cancel"; targetRequestId: string };
   unload: { type: "unload"; modelId?: string };
 };
 
@@ -30,9 +28,8 @@ export type WorkerRequest = {
 
 export type WorkerResultMap = {
   capabilities: RuntimeCapabilities;
-  load: ModelLoadResult;
   generate: OnnxRunResponse;
-  benchmark: BenchmarkResult;
+  cancel: GenerationCancelResult;
   unload: { ok: true };
 };
 
@@ -46,22 +43,15 @@ export function isWorkerRequest(value: unknown): value is WorkerRequest {
   if (!isRecord(value) || typeof value.type !== "string" || typeof value.requestId !== "string") return false;
 
   if (value.type === "capabilities") return true;
-  if (value.type === "load") return typeof value.modelId === "string";
+  if (value.type === "cancel") return typeof value.targetRequestId === "string" && value.targetRequestId.length > 0;
   if (value.type === "unload") return value.modelId === undefined || typeof value.modelId === "string";
   if (value.type === "generate") {
-    return typeof value.prompt === "string"
+    return isChat(value.messages)
       && typeof value.modelId === "string"
       && isRecord(value.options)
       && isOptionalFiniteNumber(value.options.maxNewTokens)
       && isOptionalFiniteNumber(value.options.temperature)
       && isOptionalFiniteNumber(value.options.topK);
-  }
-  if (value.type === "benchmark") {
-    return typeof value.modelId === "string"
-      && Number.isInteger(value.measuredRuns)
-      && Number(value.measuredRuns) >= 1
-      && Number(value.measuredRuns) <= 10
-      && isBenchmarkSuite(value.suite);
   }
   return false;
 }
@@ -82,17 +72,9 @@ export function isWorkerResult(type: WorkerRequestType, value: unknown): value i
       && typeof value.wasm === "boolean"
       && typeof value.crossOriginIsolated === "boolean";
   }
-  if (type === "load") {
-    return typeof value.modelId === "string"
-      && typeof value.label === "string"
-      && (value.provider === "webgpu" || value.provider === "wasm")
-      && (value.verification === "verified" || value.verification === "experimental")
-      && typeof value.loadMs === "number"
-      && typeof value.reused === "boolean";
-  }
   if (type === "generate") {
     return value.ok === false
-      ? typeof value.code === "string" && typeof value.message === "string"
+      ? isRunFailureCode(value.code) && typeof value.message === "string"
       : value.ok === true
         && isRecord(value.result)
         && typeof value.result.generatedText === "string"
@@ -100,26 +82,29 @@ export function isWorkerResult(type: WorkerRequestType, value: unknown): value i
         && Array.isArray(value.result.generatedTokens)
         && isRecord(value.result.metrics);
   }
-  if (type === "benchmark") {
-    return typeof value.modelId === "string" && Array.isArray(value.runs) && isRecord(value.summary);
+  if (type === "cancel") {
+    return typeof value.cancelled === "boolean"
+      && (typeof value.targetRequestId === "string" || (value.cancelled === false && value.targetRequestId === null));
   }
   return value.ok === true;
 }
 
-function isBenchmarkSuite(value: unknown): value is BenchmarkSuite {
-  return isRecord(value)
-    && typeof value.id === "string"
-    && typeof value.label === "string"
-    && Array.isArray(value.prompts)
-    && value.prompts.length > 0
-    && value.prompts.length <= 20
-    && value.prompts.every((prompt) => isRecord(prompt)
-      && typeof prompt.id === "string"
-      && typeof prompt.prompt === "string"
-      && prompt.prompt.length <= 100_000
-      && Number.isInteger(prompt.maxNewTokens)
-      && Number(prompt.maxNewTokens) >= 1
-      && Number(prompt.maxNewTokens) <= 64);
+function isChat(value: unknown): value is ChatTurn[] {
+  return Array.isArray(value)
+    && value.length > 0
+    && value.length <= 100
+    && value.every((message) => isRecord(message)
+      && (message.role === "system" || message.role === "user" || message.role === "assistant")
+      && typeof message.content === "string"
+      && message.content.length <= 100_000);
+}
+
+function isRunFailureCode(value: unknown) {
+  return value === "CANCELLED"
+    || value === "WEBGPU_UNAVAILABLE"
+    || value === "MODEL_NOT_VERIFIED"
+    || value === "PROMPT_TOO_LONG"
+    || value === "REQUEST_FAILED";
 }
 
 function isLogEvent(value: unknown): value is OnnxLogEvent {
@@ -127,7 +112,7 @@ function isLogEvent(value: unknown): value is OnnxLogEvent {
     && (value.level === "info" || value.level === "success" || value.level === "warning" || value.level === "error")
     && typeof value.message === "string"
     && (value.detail === undefined || typeof value.detail === "string")
-    && (value.phase === undefined || value.phase === "download" || value.phase === "tokenize" || value.phase === "inference" || value.phase === "generate" || value.phase === "benchmark" || value.phase === "runtime")
+    && (value.phase === undefined || value.phase === "download" || value.phase === "tokenize" || value.phase === "inference" || value.phase === "generate" || value.phase === "runtime")
     && (value.durationMs === undefined || isFiniteNonNegative(value.durationMs));
 }
 

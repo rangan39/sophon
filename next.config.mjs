@@ -2,6 +2,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
+const bundledModelVersion = "v-196cb8befc7d";
 const securityHeaders = [
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "X-Frame-Options", value: "DENY" },
@@ -15,41 +16,22 @@ const nextConfig = {
   outputFileTracingRoot: rootDir,
   poweredByHeader: false,
   reactStrictMode: true,
+  async rewrites() {
+    return [
+      {
+        source: `/models/${bundledModelVersion}/sshleifer-tiny-gpt2-trace/:path*`,
+        destination: "/models/sshleifer-tiny-gpt2-trace/:path*"
+      }
+    ];
+  },
   async headers() {
     return [
       { source: "/(.*)", headers: securityHeaders },
       {
-        source: "/models/:path*",
-        headers: [{ key: "Cache-Control", value: "public, max-age=86400, stale-while-revalidate=604800" }]
+        source: `/models/${bundledModelVersion}/:path*`,
+        headers: [{ key: "Cache-Control", value: "public, max-age=31536000, immutable" }]
       }
     ];
-  },
-  webpack(config, { webpack }) {
-    config.resolve.alias["@huggingface/transformers"] = path.join(rootDir, "node_modules/@huggingface/transformers/dist/transformers.web.js");
-    config.resolve.alias["onnxruntime-common"] = path.join(rootDir, "node_modules/onnxruntime-common/dist/esm/index.js");
-    // ORT ships an already-minified WebGPU module that can overwhelm a second minification pass.
-    config.plugins.push({
-      apply(compiler) {
-        compiler.hooks.thisCompilation.tap("SkipOrtWebgpuBundleMinify", (compilation) => {
-          compilation.hooks.processAssets.tap(
-            {
-              name: "SkipOrtWebgpuBundleMinify",
-              stage: webpack.Compilation.PROCESS_ASSETS_STAGE_OPTIMIZE_SIZE - 1
-            },
-            () => {
-              for (const asset of compilation.getAssets()) {
-                if (!/ort\.webgpu\.bundle\.min\.[\w-]+\.mjs$/.test(asset.name)) continue;
-                compilation.updateAsset(asset.name, asset.source, {
-                  ...asset.info,
-                  minimized: true
-                });
-              }
-            }
-          );
-        });
-      }
-    });
-    return config;
   }
 };
 

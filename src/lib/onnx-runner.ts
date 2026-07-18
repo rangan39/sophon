@@ -1,16 +1,12 @@
 import type { PreTrainedTokenizer, TextGenerationPipeline } from "@huggingface/transformers";
-import type { InferenceSession, Tensor } from "onnxruntime-web";
-import { getModelRepo, requireModelDefinition, type ModelManifest, type ModelProvider } from "@/lib/onnx-models";
-import { calculateGenerationTiming } from "@/lib/generation-metrics";
-import { decodeTokenPieces, markActiveContext } from "@/lib/token-display";
+import { requireModelDefinition, resolveModelProvider, type ModelManifest, type ModelProvider } from "@/lib/onnx-models";
+import { calculateGenerationTiming, createGenerationTelemetryGate } from "@/lib/generation-metrics";
+import { decodeTokenPieces, markActiveContext, sliceTokenPiecesByTextRange } from "@/lib/token-display";
 import type {
-  BenchmarkResult,
-  BenchmarkRun,
-  BenchmarkSuite,
+  ChatTurn,
   GenerationTelemetryEvent,
-  ModelLoadResult,
-  OnnxLogEvent,
   OnnxInputToken,
+  OnnxLogEvent,
   OnnxRunOptions,
   OnnxRunResponse,
   OnnxRunResult,
@@ -18,69 +14,56 @@ import type {
   RuntimeCapabilities
 } from "@/lib/onnx-types";
 
-type TensorLike = { data: ArrayLike<number | bigint>; dims: readonly number[]; type: "float16" | "float32" | "float64" };
-type LocalRuntime = {
-  tokenizer: PreTrainedTokenizer;
-  session: InferenceSession;
-  tensor: typeof Tensor;
-  sequenceLength: number;
-};
 type PipelineLike = TextGenerationPipeline;
-type Metadata = { base_model: string; sequence_length: number; output_names: string[] };
+type PreparedGenerationInput = string | ChatTurn[];
 
-const LOCAL_METADATA_TIMEOUT_MS = 30_000;
-const localRuntimeCache = new Map<string, Promise<LocalRuntime>>();
 const pipelineCache = new Map<string, Promise<PipelineLike>>();
+let runtimeCapabilitiesPromise: Promise<RuntimeCapabilities> | null = null;
 
-export function getRuntimeCapabilities(): RuntimeCapabilities {
-  const scope = globalThis as typeof globalThis & { navigator?: Navigator & { gpu?: unknown }; crossOriginIsolated?: boolean };
-  return {
-    webgpu: Boolean(scope.navigator?.gpu),
-    wasm: typeof WebAssembly !== "undefined",
-    crossOriginIsolated: Boolean(scope.crossOriginIsolated)
-  };
+export function getRuntimeCapabilities() {
+  runtimeCapabilitiesPromise ??= detectRuntimeCapabilities();
+  return runtimeCapabilitiesPromise;
 }
 
-export async function loadOnnxModel(modelId: string, onLog?: (event: OnnxLogEvent) => void): Promise<ModelLoadResult> {
-  const model = requireModelDefinition(modelId);
-  const provider = resolveProvider(model);
-  const log = onLog ?? (() => undefined);
-  const cacheKey = `${model.id}:${provider}`;
-  const reused = model.source.kind === "local" ? localRuntimeCache.has(model.id) : pipelineCache.has(cacheKey);
-  const startedAt = performance.now();
-
-  if (model.source.kind === "local") await getLocalRuntime(model, log);
-  else await getPipeline(model, provider, log);
-
-  return {
-    modelId: model.id,
-    label: model.label,
-    provider,
-    verification: model.verification,
-    loadMs: performance.now() - startedAt,
-    reused
-  };
+export function prepareGenerationInput(family: ModelManifest["family"], messages: readonly ChatTurn[]): PreparedGenerationInput {
+  const normalized = messages.flatMap((message) => {
+    const content = message.content.trim();
+    return content ? [{ role: message.role, content }] : [];
+  });
+  if (family !== "gpt2") return normalized;
+  if (normalized.length === 0) return "";
+  const prompt = normalized.map((message) => `${roleLabel(message.role)}: ${message.content}`).join("\n\n");
+  return `${prompt}\n\nAssistant:`;
 }
 
-export async function runOnnxTextModel(prompt: string, options: OnnxRunOptions = {}): Promise<OnnxRunResponse> {
+export function readGeneratedText(output: unknown) {
+  if (!Array.isArray(output) || output.length === 0) return "";
+  const first = output[0];
+  if (typeof first === "string") return first;
+  if (!first || typeof first !== "object" || !("generated_text" in first)) return "";
+  const generated = (first as { generated_text?: unknown }).generated_text;
+  if (typeof generated === "string") return generated;
+  if (!Array.isArray(generated)) return "";
+  for (let index = generated.length - 1; index >= 0; index -= 1) {
+    const message = generated[index];
+    if (message && typeof message === "object" && "content" in message && typeof message.content === "string") {
+      return message.content;
+    }
+  }
+  return "";
+}
+
+export async function runOnnxTextModel(messages: readonly ChatTurn[], options: OnnxRunOptions = {}): Promise<OnnxRunResponse> {
   const model = requireModelDefinition(options.modelId);
-  if (!prompt.trim()) {
+  if (options.signal?.aborted) return cancelled();
+  const normalized = messages.filter((message) => message.content.trim());
+  if (normalized.length === 0) {
     return { ok: false, code: "REQUEST_FAILED", message: "Enter a prompt before running the model." };
   }
-  if (model.source.kind === "local") return runLocalModel(prompt, model, options);
-  return runTransformersJsModel(prompt, model, options);
+  return runTransformersJsModel(normalized, model, options);
 }
 
 export async function unloadOnnxModel(modelId?: string) {
-  const localIds = modelId ? [modelId] : [...localRuntimeCache.keys()];
-  for (const id of localIds) {
-    const runtimePromise = localRuntimeCache.get(id);
-    localRuntimeCache.delete(id);
-    if (!runtimePromise) continue;
-    const runtime = await runtimePromise.catch(() => null);
-    await runtime?.session.release?.();
-  }
-
   const pipelineKeys = modelId
     ? [...pipelineCache.keys()].filter((key) => key.startsWith(`${modelId}:`))
     : [...pipelineCache.keys()];
@@ -93,92 +76,11 @@ export async function unloadOnnxModel(modelId?: string) {
   }
 }
 
-export async function benchmarkOnnxModel(
-  modelId: string,
-  suite: BenchmarkSuite,
-  options: { warmupRuns?: number; measuredRuns?: number; onLog?: (event: OnnxLogEvent) => void } = {}
-): Promise<BenchmarkResult> {
-  const warmupRuns = Math.max(0, Math.min(2, options.warmupRuns ?? 1));
-  const measuredRuns = Math.max(1, Math.min(10, options.measuredRuns ?? 3));
-  const runs: BenchmarkRun[] = [];
-  let provider: ModelProvider | null = null;
-
-  options.onLog?.({ level: "info", message: "Benchmark started", detail: `${suite.label} · ${measuredRuns} measured runs`, phase: "benchmark" });
-
-  for (const benchmarkPrompt of suite.prompts) {
-    for (let iteration = 0; iteration < warmupRuns; iteration += 1) {
-      await runOnnxTextModel(benchmarkPrompt.prompt, {
-        modelId,
-        maxNewTokens: benchmarkPrompt.maxNewTokens,
-        temperature: 0.05,
-        topK: 1
-      });
-    }
-
-    for (let iteration = 0; iteration < measuredRuns; iteration += 1) {
-      const response = await runOnnxTextModel(benchmarkPrompt.prompt, {
-        modelId,
-        maxNewTokens: benchmarkPrompt.maxNewTokens,
-        temperature: 0.05,
-        topK: 1
-      });
-      if (response.ok) {
-        provider = response.result.metrics.provider;
-        runs.push({
-          promptId: benchmarkPrompt.id,
-          iteration,
-          ok: true,
-          endToEndMs: response.result.metrics.endToEndMs,
-          ttftMs: response.result.metrics.ttftMs,
-          decodeTokensPerSecond: response.result.metrics.decodeTokensPerSecond,
-          timePerOutputTokenMs: response.result.metrics.timePerOutputTokenMs,
-          p95InterTokenLatencyMs: response.result.metrics.p95InterTokenLatencyMs,
-          outputTokenCount: response.result.metrics.outputTokenCount
-        });
-      } else {
-        runs.push({
-          promptId: benchmarkPrompt.id,
-          iteration,
-          ok: false,
-          endToEndMs: null,
-          ttftMs: null,
-          decodeTokensPerSecond: null,
-          timePerOutputTokenMs: null,
-          p95InterTokenLatencyMs: null,
-          outputTokenCount: null,
-          error: response.message
-        });
-      }
-    }
-  }
-
-  const successful = runs.filter((run) => run.ok);
-  const result: BenchmarkResult = {
-    modelId,
-    suiteId: suite.id,
-    provider,
-    warmupRuns,
-    measuredRuns,
-    runs,
-    summary: {
-      successfulRuns: successful.length,
-      failedRuns: runs.length - successful.length,
-      medianEndToEndMs: median(successful.map((run) => run.endToEndMs)),
-      medianDecodeTokensPerSecond: median(successful.map((run) => run.decodeTokensPerSecond)),
-      medianTtftMs: median(successful.map((run) => run.ttftMs)),
-      medianTimePerOutputTokenMs: median(successful.map((run) => run.timePerOutputTokenMs))
-    }
-  };
-  options.onLog?.({
-    level: result.summary.failedRuns === 0 ? "success" : "warning",
-    message: "Benchmark complete",
-    detail: `${result.summary.successfulRuns}/${runs.length} runs succeeded`,
-    phase: "benchmark"
-  });
-  return result;
-}
-
-async function runLocalModel(prompt: string, model: ModelManifest, options: OnnxRunOptions): Promise<OnnxRunResponse> {
+async function runTransformersJsModel(
+  messages: readonly ChatTurn[],
+  model: ModelManifest,
+  options: OnnxRunOptions
+): Promise<OnnxRunResponse> {
   const log = options.onLog ?? (() => undefined);
   const maxNewTokens = clamp(options.maxNewTokens ?? 24, 1, 64);
   const temperature = clamp(options.temperature ?? 0.8, 0.05, 2);
@@ -186,254 +88,117 @@ async function runLocalModel(prompt: string, model: ModelManifest, options: Onnx
   const loadStartedAt = performance.now();
 
   try {
-    const provider = resolveProvider(model);
-    const runtime = await getLocalRuntime(model, log);
-    const modelLoadMs = performance.now() - loadStartedAt;
-    const generationStartedAt = performance.now();
-    const allPromptTokenIds = runtime.tokenizer.encode(prompt, { add_special_tokens: false });
-    const promptTokenIds = allPromptTokenIds.slice(-runtime.sequenceLength);
-    const truncatedInputTokens = allPromptTokenIds.length - promptTokenIds.length;
-    const inputTokens: OnnxInputToken[] = markActiveContext(decodeTokens(runtime.tokenizer, allPromptTokenIds), truncatedInputTokens);
-    log({ level: "info", message: "Prompt tokenized", detail: `${allPromptTokenIds.length} prompt tokens · ${promptTokenIds.length} in active context`, phase: "tokenize" });
-    if (truncatedInputTokens > 0) {
-      log({
-        level: "warning",
-        message: "Prompt windowed",
-        detail: `${truncatedInputTokens} earliest token${truncatedInputTokens === 1 ? "" : "s"} omitted; the model received the most recent ${promptTokenIds.length}.`,
-        phase: "tokenize"
-      });
-    }
-
-    const allTokenIds = [...promptTokenIds];
-    const generatedTokens: OnnxToken[] = [];
-    const tokenTimestamps: number[] = [];
-    let lastOutputs: InferenceSession.ReturnType = {};
-    const eosTokenId = runtime.tokenizer.eos_token_id ?? null;
-
-    emitTelemetry(options, "prefill", generationStartedAt, tokenTimestamps, allPromptTokenIds.length, promptTokenIds.length);
-
-    for (let step = 0; step < maxNewTokens; step += 1) {
-      const context = allTokenIds.slice(-runtime.sequenceLength);
-      const inputIds = padIds(context, runtime.sequenceLength, runtime.tokenizer.pad_token_id ?? eosTokenId ?? 0);
-      const attentionMask = Array.from({ length: runtime.sequenceLength }, (_, index) => index < context.length ? 1 : 0);
-      lastOutputs = await runtime.session.run({
-        attention_mask: new runtime.tensor("int64", toBigInt64(attentionMask), [1, attentionMask.length]),
-        input_ids: new runtime.tensor("int64", toBigInt64(inputIds), [1, inputIds.length])
-      });
-
-      const firstOutputName = Object.keys(lastOutputs)[0];
-      const logits = lastOutputs.logits ?? (firstOutputName ? lastOutputs[firstOutputName] : undefined);
-      if (!isNumericTensor(logits)) throw new Error("The ONNX model did not return a numeric logits tensor.");
-      const nextTokenId = sampleNextToken(logits, context.length - 1, temperature, topK);
-      allTokenIds.push(nextTokenId);
-      if (eosTokenId !== null && nextTokenId === eosTokenId) break;
-      const tokenText = runtime.tokenizer.decode([nextTokenId], { clean_up_tokenization_spaces: false, skip_special_tokens: false });
-      generatedTokens.push({ id: nextTokenId, text: tokenText });
-      tokenTimestamps.push(performance.now());
-      emitTelemetry(options, "decode", generationStartedAt, tokenTimestamps, allPromptTokenIds.length, promptTokenIds.length);
-    }
-
-    const timing = emitTelemetry(options, "complete", generationStartedAt, tokenTimestamps, allPromptTokenIds.length, promptTokenIds.length);
-    const generationMs = timing.endToEndMs;
-    const generatedText = runtime.tokenizer.decode(generatedTokens.map((token) => token.id), { clean_up_tokenization_spaces: false, skip_special_tokens: true });
-    const fullText = runtime.tokenizer.decode(allTokenIds, { clean_up_tokenization_spaces: false, skip_special_tokens: true });
-    const tokensPerSecond = timing.decodeTokensPerSecond ?? 0;
-    const result: OnnxRunResult = {
-      model: {
-        id: model.id,
-        label: model.label,
-        baseModel: getModelRepo(model),
-        modelPath: model.source.kind === "local" ? model.source.modelPath : "",
-        sequenceLength: runtime.sequenceLength,
-        verification: model.verification
-      },
-      prompt,
-      generatedText,
-      fullText,
-      inputTokens,
-      generatedTokens,
-      inputTokenCount: promptTokenIds.length,
-      outputTokenCount: generatedTokens.length,
-      elapsedMs: generationMs,
-      tokensPerSecond,
-      metrics: {
-        provider,
-        modelLoadMs,
-        endToEndMs: timing.endToEndMs,
-        ttftMs: timing.ttftMs,
-        generationMs,
-        firstTokenMs: timing.ttftMs,
-        decodeMs: timing.decodeMs,
-        decodeTokensPerSecond: timing.decodeTokensPerSecond,
-        timePerOutputTokenMs: timing.timePerOutputTokenMs,
-        p95InterTokenLatencyMs: timing.p95InterTokenLatencyMs,
-        promptTokenCount: allPromptTokenIds.length,
-        contextTokenCount: promptTokenIds.length,
-        truncatedInputTokens,
-        inputTokenCount: promptTokenIds.length,
-        outputTokenCount: generatedTokens.length,
-        tokensPerSecond
-      },
-      inputNames: [...runtime.session.inputNames],
-      outputNames: [...runtime.session.outputNames],
-      outputShapes: Object.fromEntries(Object.entries(lastOutputs).map(([name, value]) => [name, readDims(value)]))
-    };
-    log({ level: "success", message: "Generation complete", detail: `${result.outputTokenCount} tokens · ${formatRate(timing.decodeTokensPerSecond)}`, durationMs: Math.round(generationMs), phase: "runtime" });
-    return { ok: true, result };
-  } catch (error) {
-    return failure(error, log, model.label);
-  }
-}
-
-async function runTransformersJsModel(prompt: string, model: ModelManifest, options: OnnxRunOptions): Promise<OnnxRunResponse> {
-  const log = options.onLog ?? (() => undefined);
-  const maxNewTokens = clamp(options.maxNewTokens ?? 24, 1, 64);
-  const temperature = clamp(options.temperature ?? 0.8, 0.05, 2);
-  const topK = clamp(options.topK ?? 40, 1, 100);
-  const loadStartedAt = performance.now();
-
-  try {
-    const provider = resolveProvider(model);
+    const provider = await resolveProvider(model);
     const generator = await getPipeline(model, provider, log);
+    throwIfCancelled(options.signal);
     const modelLoadMs = performance.now() - loadStartedAt;
     const generationStartedAt = performance.now();
-    const inputTokenIds = generator.tokenizer.encode(prompt, { add_special_tokens: false });
-    const inputTokens: OnnxInputToken[] = markActiveContext(decodeTokens(generator.tokenizer, inputTokenIds), 0);
+    const originalInput = prepareGenerationInput(model.family, messages);
+    const originalRenderedInput = renderGenerationInput(generator.tokenizer, originalInput);
+    const promptTokenCount = generator.tokenizer.encode(originalRenderedInput, { add_special_tokens: false }).length;
+    const contextLimit = readContextLimit(generator.tokenizer, model);
+    const maxInputTokens = contextLimit === null ? null : Math.max(1, contextLimit - maxNewTokens);
+    const fittedMessages = fitMessagesToContext(generator.tokenizer, model.family, messages, maxInputTokens);
+    const input = prepareGenerationInput(model.family, fittedMessages);
+    const renderedInput = renderGenerationInput(generator.tokenizer, input);
+    const inputTokenIds = generator.tokenizer.encode(renderedInput, { add_special_tokens: false });
+    (generator.tokenizer as PreTrainedTokenizer & { truncation_side: string }).truncation_side = "left";
+    const contextTokenCount = maxInputTokens === null ? inputTokenIds.length : Math.min(inputTokenIds.length, maxInputTokens);
+    const truncatedInputTokens = Math.max(0, promptTokenCount - contextTokenCount);
     const tokenTimestamps: number[] = [];
     const streamedTokenIds: number[] = [];
+    const shouldPublishTelemetry = createGenerationTelemetryGate();
     const specialTokenIds = new Set((generator.tokenizer.all_special_ids ?? []).map(Number));
-    const { TextStreamer } = await import("@huggingface/transformers");
+    const { InterruptableStoppingCriteria, TextStreamer } = await import("@huggingface/transformers");
+    throwIfCancelled(options.signal);
+    const stoppingCriteria = new InterruptableStoppingCriteria();
+    const interrupt = () => stoppingCriteria.interrupt();
     const streamer = new TextStreamer(generator.tokenizer, {
       skip_prompt: true,
       skip_special_tokens: true,
       callback_function: () => undefined,
       token_callback_function: (tokens) => {
+        if (options.signal?.aborted) return;
         const emittedAt = performance.now();
+        const previousTokenCount = streamedTokenIds.length;
         for (const token of tokens) {
           const tokenId = Number(token);
           if (specialTokenIds.has(tokenId)) continue;
           streamedTokenIds.push(tokenId);
           tokenTimestamps.push(emittedAt);
         }
-        emitTelemetry(options, "decode", generationStartedAt, tokenTimestamps, inputTokenIds.length, inputTokenIds.length, emittedAt);
+        if (streamedTokenIds.length === previousTokenCount) return;
+        emitTelemetry(options, shouldPublishTelemetry, "decode", generationStartedAt, tokenTimestamps, promptTokenCount, contextTokenCount, emittedAt);
       }
     });
-    emitTelemetry(options, "prefill", generationStartedAt, tokenTimestamps, inputTokenIds.length, inputTokenIds.length);
-    const output = await generator(prompt, {
-      max_new_tokens: maxNewTokens,
-      do_sample: temperature > 0.1 && topK > 1,
-      temperature,
-      top_k: topK,
-      return_full_text: false,
-      streamer
-    });
-    const timing = emitTelemetry(options, "complete", generationStartedAt, tokenTimestamps, inputTokenIds.length, inputTokenIds.length);
-    const generationMs = timing.endToEndMs;
+    options.signal?.addEventListener("abort", interrupt, { once: true });
+    let output: unknown;
+    try {
+      emitTelemetry(options, shouldPublishTelemetry, "prefill", generationStartedAt, tokenTimestamps, promptTokenCount, contextTokenCount);
+      output = await generator(input, {
+        max_new_tokens: maxNewTokens,
+        do_sample: temperature > 0.1 && topK > 1,
+        temperature,
+        top_k: topK,
+        return_full_text: false,
+        stopping_criteria: stoppingCriteria,
+        streamer,
+        ...(maxInputTokens === null ? {} : { tokenizer_encode_kwargs: { max_length: maxInputTokens } })
+      });
+      throwIfCancelled(options.signal);
+    } finally {
+      options.signal?.removeEventListener("abort", interrupt);
+    }
+    const timing = emitTelemetry(options, shouldPublishTelemetry, "complete", generationStartedAt, tokenTimestamps, promptTokenCount, contextTokenCount);
     const generatedText = readGeneratedText(output);
     const outputTokenIds = streamedTokenIds.length > 0
       ? streamedTokenIds
       : generator.tokenizer.encode(generatedText, { add_special_tokens: false });
     const generatedTokens = decodeTokens(generator.tokenizer, outputTokenIds);
-    const tokensPerSecond = timing.decodeTokensPerSecond ?? 0;
-    const repo = getModelRepo(model);
     const result: OnnxRunResult = {
-      model: {
-        id: model.id,
-        label: model.label,
-        baseModel: repo,
-        modelPath: `${repo}@${model.source.kind === "huggingface" ? model.source.revision : "bundled"}`,
-        sequenceLength: model.format.contextLength ?? 0,
-        verification: model.verification
-      },
-      prompt,
       generatedText,
-      fullText: `${prompt}${generatedText}`,
-      inputTokens,
+      inputTokens: getLatestUserTokens(generator.tokenizer, inputTokenIds, renderedInput, fittedMessages, contextTokenCount),
       generatedTokens,
-      inputTokenCount: inputTokenIds.length,
       outputTokenCount: outputTokenIds.length,
-      elapsedMs: generationMs,
-      tokensPerSecond,
       metrics: {
         provider,
         modelLoadMs,
         endToEndMs: timing.endToEndMs,
         ttftMs: timing.ttftMs,
-        generationMs,
-        firstTokenMs: timing.ttftMs,
         decodeMs: timing.decodeMs,
         decodeTokensPerSecond: timing.decodeTokensPerSecond,
         timePerOutputTokenMs: timing.timePerOutputTokenMs,
         p95InterTokenLatencyMs: timing.p95InterTokenLatencyMs,
-        promptTokenCount: inputTokenIds.length,
-        contextTokenCount: inputTokenIds.length,
-        truncatedInputTokens: 0,
-        inputTokenCount: inputTokenIds.length,
-        outputTokenCount: outputTokenIds.length,
-        tokensPerSecond
-      },
-      inputNames: [...model.graph.inputNames],
-      outputNames: [...model.graph.outputNames],
-      outputShapes: {}
+        promptTokenCount,
+        contextTokenCount,
+        truncatedInputTokens,
+        outputTokenCount: outputTokenIds.length
+      }
     };
-    log({ level: "success", message: "Generation complete", detail: `${result.outputTokenCount} tokens · ${formatRate(timing.decodeTokensPerSecond)}`, durationMs: Math.round(generationMs), phase: "runtime" });
+    log({ level: "success", message: "Generation complete", detail: `${result.outputTokenCount} tokens · ${formatRate(timing.decodeTokensPerSecond)}`, durationMs: Math.round(timing.endToEndMs), phase: "runtime" });
     return { ok: true, result };
   } catch (error) {
-    return failure(error, log, model.label);
+    return failure(options.signal?.aborted ? new GenerationCancelledError() : error, log, model.label);
   }
-}
-
-async function getLocalRuntime(model: ModelManifest, log: (event: OnnxLogEvent) => void) {
-  const cached = localRuntimeCache.get(model.id);
-  if (cached) {
-    log({ level: "info", message: "Using cached model session", detail: model.label, phase: "runtime" });
-    return cached;
-  }
-  const loading = loadLocalRuntime(model, log).catch((error) => {
-    localRuntimeCache.delete(model.id);
-    throw error;
-  });
-  localRuntimeCache.set(model.id, loading);
-  return loading;
-}
-
-async function loadLocalRuntime(model: ModelManifest, log: (event: OnnxLogEvent) => void): Promise<LocalRuntime> {
-  if (model.source.kind !== "local") throw new Error(`${model.label} is not a local ONNX model.`);
-  const startedAt = performance.now();
-  log({ level: "info", message: "Loading ONNX model", detail: model.source.modelPath, phase: "download" });
-  const [{ AutoTokenizer, env }, ort] = await Promise.all([import("@huggingface/transformers"), import("onnxruntime-web/webgpu")]);
-  env.allowLocalModels = true;
-  env.allowRemoteModels = true;
-  const metadataResponse = await fetch(model.source.metadataUrl, {
-    signal: AbortSignal.timeout(LOCAL_METADATA_TIMEOUT_MS)
-  });
-  if (!metadataResponse.ok) throw new Error(`Could not load model metadata (${metadataResponse.status}).`);
-  const metadataValue: unknown = await metadataResponse.json();
-  if (!isMetadata(metadataValue)) throw new Error("The bundled model metadata is invalid.");
-  const metadata = metadataValue;
-  if (model.format.contextLength !== null && metadata.sequence_length !== model.format.contextLength) {
-    throw new Error(`The ${model.label} manifest and exported graph disagree on context length.`);
-  }
-  const tokenizer = await AutoTokenizer.from_pretrained(model.source.baseUrl);
-  const session = await ort.InferenceSession.create(model.source.modelPath, { executionProviders: ["webgpu"] });
-  log({ level: "success", message: "ONNX session ready", detail: `${metadata.base_model} · ${metadata.sequence_length} token context`, durationMs: Math.round(performance.now() - startedAt), phase: "runtime" });
-  return { tokenizer, session, tensor: ort.Tensor, sequenceLength: metadata.sequence_length };
 }
 
 async function getPipeline(model: ModelManifest, provider: ModelProvider, log: (event: OnnxLogEvent) => void) {
-  if (model.source.kind !== "huggingface") throw new Error(`${model.label} has no Hugging Face source.`);
   const cacheKey = `${model.id}:${provider}`;
   const cached = pipelineCache.get(cacheKey);
   if (cached) {
     log({ level: "info", message: "Using cached model pipeline", detail: `${model.label} · ${provider}`, phase: "runtime" });
     return cached;
   }
-  log({ level: "info", message: "Loading experimental model", detail: `${model.source.repo}@${model.source.revision}`, phase: "download" });
-  const loading = import("@huggingface/transformers").then(({ pipeline }) => {
-    return pipeline("text-generation", model.source.kind === "huggingface" ? model.source.repo : "", {
+  const source = model.source.kind === "local" ? model.source.baseUrl : model.source.repo;
+  const sourceDetail = model.source.kind === "local" ? source : `${source}@${model.source.revision}`;
+  log({ level: "info", message: "Loading model", detail: sourceDetail, phase: "download" });
+  const loading = import("@huggingface/transformers").then(({ env, pipeline }) => {
+    env.allowLocalModels = true;
+    env.allowRemoteModels = true;
+    return pipeline("text-generation", source, {
       device: provider,
       dtype: model.format.quantization,
-      revision: model.source.kind === "huggingface" ? model.source.revision : "main"
+      ...(model.source.kind === "huggingface" ? { revision: model.source.revision } : {})
     });
   }).catch((error) => {
     pipelineCache.delete(cacheKey);
@@ -443,32 +208,94 @@ async function getPipeline(model: ModelManifest, provider: ModelProvider, log: (
   return loading;
 }
 
-function resolveProvider(model: ModelManifest): ModelProvider {
-  const capabilities = getRuntimeCapabilities();
-  if (capabilities.webgpu && model.providers.includes("webgpu")) return "webgpu";
-  if (capabilities.wasm && model.providers.includes("wasm")) return "wasm";
+function renderGenerationInput(tokenizer: PreTrainedTokenizer, input: PreparedGenerationInput) {
+  if (typeof input === "string") return input;
+  const rendered = tokenizer.apply_chat_template(input, { tokenize: false, add_generation_prompt: true });
+  if (typeof rendered !== "string") throw new Error("The model chat template did not return text.");
+  return rendered;
+}
+
+function fitMessagesToContext(
+  tokenizer: PreTrainedTokenizer,
+  family: ModelManifest["family"],
+  messages: readonly ChatTurn[],
+  maxInputTokens: number | null
+) {
+  const fitted = [...messages];
+  if (maxInputTokens === null) return fitted;
+  while (fitted.length > 1) {
+    const rendered = renderGenerationInput(tokenizer, prepareGenerationInput(family, fitted));
+    if (tokenizer.encode(rendered, { add_special_tokens: false }).length <= maxInputTokens) break;
+    const removableIndex = fitted[0]?.role === "system" && fitted.length > 2 ? 1 : 0;
+    const removePair = fitted[removableIndex]?.role === "user" && fitted[removableIndex + 1]?.role === "assistant";
+    fitted.splice(removableIndex, removePair ? 2 : 1);
+  }
+  return fitted;
+}
+
+function readContextLimit(tokenizer: PreTrainedTokenizer, model: ModelManifest) {
+  if (model.format.contextLength !== null) return model.format.contextLength;
+  const configured = (tokenizer as PreTrainedTokenizer & { model_max_length?: unknown }).model_max_length;
+  return typeof configured === "number" && Number.isSafeInteger(configured) && configured > 0 && configured < 1_000_000
+    ? configured
+    : null;
+}
+
+function getLatestUserTokens(
+  tokenizer: PreTrainedTokenizer,
+  inputTokenIds: readonly number[],
+  renderedInput: string,
+  messages: readonly ChatTurn[],
+  contextTokenCount: number
+): OnnxInputToken[] {
+  const latestUser = messages.findLast((message) => message.role === "user" && message.content.trim());
+  if (!latestUser) return [];
+  const content = latestUser.content.trim();
+  const contentStart = renderedInput.lastIndexOf(content);
+  if (contentStart < 0) return [];
+  const pieces = markActiveContext(decodeTokens(tokenizer, inputTokenIds), Math.max(0, inputTokenIds.length - contextTokenCount));
+  return sliceTokenPiecesByTextRange(pieces, renderedInput, contentStart, contentStart + content.length)
+    .map((token) => ({ ...token, inContext: token.inContext === true }));
+}
+
+async function resolveProvider(model: ModelManifest): Promise<ModelProvider> {
+  const capabilities = await getRuntimeCapabilities();
+  const provider = resolveModelProvider(model, capabilities);
+  if (provider) return provider;
   throw new Error(`${model.label} requires ${model.providers.join(" or ")}, but this browser exposes neither compatible provider.`);
 }
 
+async function detectRuntimeCapabilities(): Promise<RuntimeCapabilities> {
+  const scope = globalThis as typeof globalThis & {
+    navigator?: Navigator & { gpu?: { requestAdapter?: () => Promise<unknown> } };
+    crossOriginIsolated?: boolean;
+  };
+  let webgpu = false;
+  try {
+    webgpu = Boolean(await scope.navigator?.gpu?.requestAdapter?.());
+  } catch {
+    // A denied or unavailable adapter is equivalent to no WebGPU capability.
+  }
+  return {
+    webgpu,
+    wasm: typeof WebAssembly !== "undefined",
+    crossOriginIsolated: Boolean(scope.crossOriginIsolated)
+  };
+}
+
 function failure(error: unknown, log: (event: OnnxLogEvent) => void, label: string): OnnxRunResponse {
+  if (error instanceof GenerationCancelledError) {
+    log({ level: "info", message: "Generation cancelled", phase: "runtime" });
+    return cancelled();
+  }
   const message = error instanceof Error ? error.message : `${label} failed to run.`;
   log({ level: "error", message: "Inference failed", detail: message, phase: "runtime" });
   return { ok: false, code: message.includes("WebGPU") || message.includes("webgpu") ? "WEBGPU_UNAVAILABLE" : "REQUEST_FAILED", message };
 }
 
-function readGeneratedText(output: unknown) {
-  if (!Array.isArray(output) || output.length === 0) return "";
-  const first = output[0];
-  if (typeof first === "string") return first;
-  if (first && typeof first === "object" && "generated_text" in first) {
-    const value = (first as { generated_text?: unknown }).generated_text;
-    return typeof value === "string" ? value : "";
-  }
-  return "";
-}
-
 function emitTelemetry(
   options: OnnxRunOptions,
+  shouldPublish: (phase: GenerationTelemetryEvent["phase"], observedAtMs: number) => boolean,
   phase: GenerationTelemetryEvent["phase"],
   startedAtMs: number,
   tokenTimestampsMs: readonly number[],
@@ -480,14 +307,12 @@ function emitTelemetry(
     phase,
     promptTokenCount,
     contextTokenCount,
-    ...calculateGenerationTiming(startedAtMs, tokenTimestampsMs, observedAtMs)
+    ...calculateGenerationTiming(startedAtMs, tokenTimestampsMs, observedAtMs, {
+      includePercentiles: phase === "complete"
+    })
   };
-  options.onTelemetry?.(event);
+  if (shouldPublish(phase, observedAtMs)) options.onTelemetry?.(event);
   return event;
-}
-
-function formatRate(tokensPerSecond: number | null) {
-  return tokensPerSecond === null ? "decode rate pending" : `${tokensPerSecond.toFixed(1)} decode tok/s`;
 }
 
 function decodeTokens(tokenizer: PreTrainedTokenizer, tokenIds: readonly number[]): OnnxToken[] {
@@ -497,67 +322,31 @@ function decodeTokens(tokenizer: PreTrainedTokenizer, tokenIds: readonly number[
   }));
 }
 
-function padIds(ids: number[], length: number, padId: number) {
-  return Array.from({ length }, (_, index) => ids[index] ?? padId);
+function roleLabel(role: ChatTurn["role"]) {
+  if (role === "system") return "System";
+  if (role === "user") return "User";
+  return "Assistant";
 }
 
-function toBigInt64(values: number[]) {
-  return BigInt64Array.from(values.map((value) => BigInt(value)));
-}
-
-function sampleNextToken(logits: TensorLike, sequenceIndex: number, temperature: number, topK: number) {
-  const vocabSize = logits.dims.at(-1) ?? 0;
-  if (!vocabSize) throw new Error("The logits output has no vocabulary dimension.");
-  const start = sequenceIndex * vocabSize;
-  const candidates = Array.from({ length: vocabSize }, (_, index) => ({ index, value: Number(logits.data[start + index] ?? -Infinity) }));
-  candidates.sort((left, right) => right.value - left.value);
-  const topCandidates = candidates.slice(0, Math.min(topK, candidates.length));
-  if (temperature <= 0.1 || topCandidates.length === 1) return topCandidates[0]?.index ?? 0;
-  const maxValue = topCandidates[0]?.value ?? 0;
-  const weights = topCandidates.map((candidate) => Math.exp((candidate.value - maxValue) / temperature));
-  const total = weights.reduce((sum, weight) => sum + weight, 0);
-  let cursor = Math.random() * total;
-  for (let index = 0; index < topCandidates.length; index += 1) {
-    cursor -= weights[index] ?? 0;
-    if (cursor <= 0) return topCandidates[index]?.index ?? 0;
-  }
-  return topCandidates[0]?.index ?? 0;
-}
-
-function median(values: Array<number | null>) {
-  const sorted = values.filter((value): value is number => value !== null && Number.isFinite(value)).sort((a, b) => a - b);
-  if (sorted.length === 0) return null;
-  const middle = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0 ? ((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2 : sorted[middle] ?? null;
+function formatRate(tokensPerSecond: number | null) {
+  return tokensPerSecond === null ? "decode rate pending" : `${tokensPerSecond.toFixed(1)} decode tok/s`;
 }
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
 
-function isMetadata(value: unknown): value is Metadata {
-  if (!isRecord(value)) return false;
-  return typeof value.base_model === "string"
-    && Number.isSafeInteger(value.sequence_length)
-    && Number(value.sequence_length) > 0
-    && Number(value.sequence_length) <= 32_768
-    && Array.isArray(value.output_names)
-    && value.output_names.every((name) => typeof name === "string");
+class GenerationCancelledError extends Error {
+  constructor() {
+    super("Generation cancelled.");
+    this.name = "GenerationCancelledError";
+  }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+function throwIfCancelled(signal: AbortSignal | undefined) {
+  if (signal?.aborted) throw new GenerationCancelledError();
 }
 
-function isNumericTensor(value: unknown): value is TensorLike {
-  if (!isRecord(value) || (value.type !== "float16" && value.type !== "float32" && value.type !== "float64")) return false;
-  return Array.isArray(value.dims)
-    && value.dims.every((dimension) => Number.isSafeInteger(dimension) && dimension >= 0)
-    && isRecord(value.data)
-    && typeof value.data.length === "number";
-}
-
-function readDims(value: unknown) {
-  if (!isRecord(value) || !Array.isArray(value.dims)) return [];
-  return value.dims.filter((dimension): dimension is number => typeof dimension === "number" && Number.isFinite(dimension));
+function cancelled(): OnnxRunResponse {
+  return { ok: false, code: "CANCELLED", message: "Generation cancelled." };
 }

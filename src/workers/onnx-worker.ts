@@ -1,8 +1,9 @@
-import { benchmarkOnnxModel, getRuntimeCapabilities, loadOnnxModel, runOnnxTextModel, unloadOnnxModel } from "@/lib/onnx-runner";
+import { getRuntimeCapabilities, runOnnxTextModel, unloadOnnxModel } from "@/lib/onnx-runner";
 import type { GenerationTelemetryEvent, OnnxLogEvent } from "@/lib/onnx-types";
-import { isWorkerRequest } from "@/lib/onnx-worker-protocol";
+import { isWorkerRequest, type WorkerRequest } from "@/lib/onnx-worker-protocol";
 
 let taskQueue = Promise.resolve();
+const generationControllers = new Map<string, AbortController>();
 
 function postLog(requestId: string, event: OnnxLogEvent) {
   self.postMessage({ type: "log", requestId, event });
@@ -33,39 +34,48 @@ self.onmessage = (message: MessageEvent<unknown>) => {
   }
 
   if (request.type === "capabilities") {
-    complete(request.requestId, getRuntimeCapabilities());
+    void getRuntimeCapabilities()
+      .then((capabilities) => complete(request.requestId, capabilities))
+      .catch((error) => fail(request.requestId, error));
     return;
   }
 
-  taskQueue = taskQueue.then(async () => {
-    try {
-      if (request.type === "load") {
-        complete(request.requestId, await loadOnnxModel(request.modelId, (event) => postLog(request.requestId, event)));
-        return;
-      }
-      if (request.type === "generate") {
-        complete(request.requestId, await runOnnxTextModel(request.prompt, {
-          modelId: request.modelId,
-          ...request.options,
-          onLog: (event) => postLog(request.requestId, event),
-          onTelemetry: (telemetry) => postTelemetry(request.requestId, telemetry)
-        }));
-        return;
-      }
-      if (request.type === "benchmark") {
-        complete(request.requestId, await benchmarkOnnxModel(request.modelId, request.suite, {
-          measuredRuns: request.measuredRuns,
-          onLog: (event) => postLog(request.requestId, event)
-        }));
-        return;
-      }
-      await unloadOnnxModel(request.modelId);
-      complete(request.requestId, { ok: true });
-    } catch (error) {
-      fail(request.requestId, error);
-    }
-  });
+  if (request.type === "cancel") {
+    const controller = generationControllers.get(request.targetRequestId);
+    const cancelled = Boolean(controller && !controller.signal.aborted);
+    controller?.abort();
+    complete(request.requestId, { cancelled, targetRequestId: request.targetRequestId });
+    return;
+  }
+
+  if (request.type === "generate") {
+    generationControllers.set(request.requestId, new AbortController());
+  }
+
+  taskQueue = taskQueue.then(() => runQueuedRequest(request));
 };
+
+async function runQueuedRequest(request: Exclude<WorkerRequest, { type: "capabilities" | "cancel" }>) {
+  try {
+    if (request.type === "generate") {
+      const controller = generationControllers.get(request.requestId);
+      complete(request.requestId, await runOnnxTextModel(request.messages, {
+        modelId: request.modelId,
+        ...request.options,
+        signal: controller?.signal,
+        onLog: (event) => postLog(request.requestId, event),
+        onTelemetry: (telemetry) => postTelemetry(request.requestId, telemetry)
+      }));
+      return;
+    }
+    await unloadOnnxModel(request.modelId);
+    complete(request.requestId, { ok: true });
+  } catch (error) {
+    fail(request.requestId, error);
+  } finally {
+    if (request.type === "generate") generationControllers.delete(request.requestId);
+  }
+}
 
 function readRequestId(value: unknown) {
   if (typeof value !== "object" || value === null || !("requestId" in value)) return null;

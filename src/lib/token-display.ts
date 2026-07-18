@@ -22,6 +22,38 @@ export function markActiveContext<T extends TokenPiece>(tokens: readonly T[], ac
   }));
 }
 
+/**
+ * Returns the token fragments that overlap an exact character range in the
+ * decoded source. Boundary tokens are clipped so the fragments still render
+ * the same text as the message excerpt instead of leaking prompt scaffolding.
+ */
+export function sliceTokenPiecesByTextRange<T extends ContextTokenPiece>(
+  tokens: readonly T[],
+  sourceText: string,
+  start: number,
+  end: number
+): ContextTokenPiece[] {
+  if (start < 0 || end <= start || end > sourceText.length) return [];
+  if (tokens.map((token) => token.text).join("") !== sourceText) return [];
+
+  const result: ContextTokenPiece[] = [];
+  let offset = 0;
+
+  for (const token of tokens) {
+    const tokenStart = offset;
+    const tokenEnd = tokenStart + token.text.length;
+    offset = tokenEnd;
+    if (tokenEnd <= start || tokenStart >= end) continue;
+
+    const fragmentStart = Math.max(start, tokenStart) - tokenStart;
+    const fragmentEnd = Math.min(end, tokenEnd) - tokenStart;
+    const text = token.text.slice(fragmentStart, fragmentEnd);
+    if (text) result.push({ id: token.id, text, inContext: token.inContext });
+  }
+
+  return result;
+}
+
 export function groupTokenPieces(tokens: readonly ContextTokenPiece[]): TokenWord[] {
   const groups: TokenWord[] = [];
 

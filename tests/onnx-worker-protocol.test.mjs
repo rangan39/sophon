@@ -6,7 +6,7 @@ test("accepts valid generation requests and rejects malformed numeric options", 
   assert.equal(isWorkerRequest({
     type: "generate",
     requestId: "request-1",
-    prompt: "The signal is",
+    messages: [{ role: "user", content: "The signal is" }],
     modelId: "tiny-gpt2",
     options: { maxNewTokens: 24, temperature: 0.8, topK: 40 }
   }), true);
@@ -14,9 +14,47 @@ test("accepts valid generation requests and rejects malformed numeric options", 
   assert.equal(isWorkerRequest({
     type: "generate",
     requestId: "request-2",
-    prompt: "The signal is",
+    messages: [{ role: "user", content: "The signal is" }],
     modelId: "tiny-gpt2",
     options: { maxNewTokens: "24" }
+  }), false);
+
+  assert.equal(isWorkerRequest({
+    type: "generate",
+    requestId: "request-3",
+    messages: [{ role: "tool", content: "not supported" }],
+    modelId: "tiny-gpt2",
+    options: {}
+  }), false);
+});
+
+test("accepts targeted cancellation requests and validates acknowledgements", () => {
+  assert.equal(isWorkerRequest({
+    type: "cancel",
+    requestId: "cancel-1",
+    targetRequestId: "request-1"
+  }), true);
+  assert.equal(isWorkerRequest({
+    type: "cancel",
+    requestId: "cancel-2",
+    targetRequestId: ""
+  }), false);
+
+  assert.equal(isWorkerResult("cancel", {
+    cancelled: true,
+    targetRequestId: "request-1"
+  }), true);
+  assert.equal(isWorkerResult("cancel", {
+    cancelled: false,
+    targetRequestId: null
+  }), true);
+  assert.equal(isWorkerResult("cancel", {
+    cancelled: true,
+    targetRequestId: null
+  }), false);
+  assert.equal(isWorkerResult("cancel", {
+    cancelled: "yes",
+    targetRequestId: "request-1"
   }), false);
 });
 
@@ -35,7 +73,7 @@ test("validates worker events before dispatching them", () => {
       decodeTokensPerSecond: 250,
       timePerOutputTokenMs: 4,
       latestInterTokenLatencyMs: 4,
-      p95InterTokenLatencyMs: 4
+      p95InterTokenLatencyMs: null
     }
   }), true);
   assert.equal(isWorkerResponse({ type: "error", requestId: "request-1" }), false);
@@ -44,5 +82,7 @@ test("validates worker events before dispatching them", () => {
 test("checks operation-specific completion envelopes", () => {
   assert.equal(isWorkerResult("capabilities", { webgpu: true, wasm: true, crossOriginIsolated: false }), true);
   assert.equal(isWorkerResult("generate", { ok: false, code: "REQUEST_FAILED", message: "failed" }), true);
+  assert.equal(isWorkerResult("generate", { ok: false, code: "CANCELLED", message: "Generation cancelled." }), true);
+  assert.equal(isWorkerResult("generate", { ok: false, code: "UNKNOWN", message: "failed" }), false);
   assert.equal(isWorkerResult("generate", { ok: true, result: {} }), false);
 });
