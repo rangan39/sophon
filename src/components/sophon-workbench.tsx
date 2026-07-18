@@ -35,6 +35,7 @@ type FailedTurn = {
 type GenerationState =
   | { status: "idle" }
   | { status: "running"; activity: RuntimeActivity; turn: Omit<FailedTurn, "reason"> };
+type BrowserStorage = StorageEstimate & { persistent: boolean };
 
 const STARTER_MESSAGES: ChatMessage[] = [
   {
@@ -55,6 +56,7 @@ export function SophonWorkbench() {
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [modelId, setModelId] = useState<string>(DEFAULT_ONNX_MODEL.id);
   const [capabilities, setCapabilities] = useState<RuntimeCapabilities | null>(null);
+  const [browserStorage, setBrowserStorage] = useState<BrowserStorage | null>();
   const generationIdRef = useRef(0);
   const warmupAbortRef = useRef<AbortController | null>(null);
   const messageEndRef = useRef<HTMLDivElement>(null);
@@ -64,6 +66,7 @@ export function SophonWorkbench() {
   const selectedModel = MODEL_REGISTRY.find((model) => model.id === modelId) ?? DEFAULT_ONNX_MODEL;
   const modelCompatibility = getModelCompatibility(capabilities, selectedModel);
   const runtimeStatus = getRuntimeStatus(capabilities, selectedModel, loadedModelId, runtimeActivity);
+  const storageLabel = browserStorage === undefined ? "Checking…" : browserStorage === null ? "Unavailable" : `${formatStorageBytes(browserStorage.usage)} / ${formatStorageBytes(browserStorage.quota)} · ${browserStorage.persistent ? "Persistent" : "Best effort"}`;
   const canSend = prompt.trim().length > 0 && !isRunning && modelCompatibility === "compatible";
 
   useEffect(() => {
@@ -79,6 +82,16 @@ export function SophonWorkbench() {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    const manager = navigator.storage;
+    const estimate = manager?.estimate ? manager.estimate() : Promise.resolve(null);
+    void Promise.all([estimate, manager?.persisted?.() ?? false])
+      .then(([storage, persistent]) => { if (active) setBrowserStorage(storage ? { ...storage, persistent } : null); })
+      .catch(() => { if (active) setBrowserStorage(null); });
+    return () => { active = false; };
+  }, [loadedModelId]);
 
   useEffect(() => {
     const connection = navigator as Navigator & { connection?: { saveData?: boolean } };
@@ -443,6 +456,9 @@ export function SophonWorkbench() {
                   </span>
                   <span className="shrink-0 tabular-nums">{prompt.length} chars</span>
                 </div>
+                <p className="mt-2 truncate px-1 text-right font-mono text-[10px] uppercase tracking-wider text-white/50" data-state={browserStorage === undefined ? "checking" : browserStorage === null ? "unavailable" : "ready"} data-testid="browser-storage" title="Approximate Sophon site usage / browser-managed quota, including cached models.">
+                  Browser storage · <span className="tabular-nums text-white/70">{storageLabel}</span>
+                </p>
               </form>
             </div>
           </section>
@@ -555,4 +571,12 @@ function formatRate(value: number | null) {
 
 function formatDuration(value: number | null) {
   return value === null ? "—" : `${Math.round(value)} ms`;
+}
+
+function formatStorageBytes(bytes?: number) {
+  if (bytes === undefined) return "unknown";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const rank = Math.min(Math.floor(Math.log(Math.max(bytes, 1)) / Math.log(1024)), units.length - 1);
+  const value = bytes / 1024 ** rank;
+  return `${value.toFixed(rank > 0 && value < 10 ? 1 : 0)} ${units[rank] ?? "TB"}`;
 }

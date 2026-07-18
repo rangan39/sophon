@@ -52,6 +52,19 @@ test("pins remote model sources to immutable commit revisions", () => {
   for (const model of remoteModels) assert.match(model.source.revision, /^[a-f0-9]{40}$/);
 });
 
+test("catalogs Tiny Aya as an explicit non-commercial WebGPU model", () => {
+  const model = requireModelDefinition("tiny-aya-global");
+  assert.equal(model.verification, "experimental");
+  assert.equal(model.source.kind, "huggingface");
+  assert.deepEqual(model.providers, ["webgpu"]);
+  assert.equal(model.format.quantization, "q4f16");
+  assert.equal(model.format.sizeLabel, "~2.35 GB");
+  assert.equal(model.format.sizeBytes, 2_354_413_407);
+  assert.equal(model.format.contextLength, 8192);
+  assert.match(model.label, /non-commercial/i);
+  assert.match(model.description, /Cohere Labs AUP/i);
+});
+
 test("resolves the fastest compatible provider from one pure policy", () => {
   assert.equal(resolveModelProvider(DEFAULT_ONNX_MODEL, { webgpu: true, wasm: true }), "wasm");
   assert.equal(resolveModelProvider(DEFAULT_ONNX_MODEL, { webgpu: false, wasm: true }), "wasm");

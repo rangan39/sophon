@@ -32,10 +32,14 @@ try {
   const textarea = activePage.getByRole("textbox", { name: "Message Sophon", exact: true });
   const modelSelect = activePage.getByRole("combobox", { name: /^Choose model\./ });
   const sendButton = activePage.getByRole("button", { name: "Send message", exact: true });
+  const storageStatus = activePage.getByTestId("browser-storage");
   await assertVisible(heading, "Sophon heading");
   await assertVisible(textarea, "labeled prompt textarea");
   assert.equal(await textarea.getAttribute("placeholder"), "Ask the local model anything...");
   await assertVisible(modelSelect, "model selector");
+  await assertVisible(storageStatus, "browser storage status");
+  await activePage.waitForFunction(() => document.querySelector('[data-testid="browser-storage"]')?.getAttribute("data-state") === "ready", undefined, { timeout: timeoutMs });
+  assert.match((await storageStatus.textContent()) ?? "", /^\s*Browser storage · .+ \/ .+ · (Persistent|Best effort)\s*$/);
   assert.equal(await modelSelect.evaluate((element) => element.tagName), "SELECT", "Model control must use a native select.");
   assert.equal(await sendButton.isDisabled(), true, "Send must be disabled for an empty prompt.");
 
@@ -49,6 +53,7 @@ try {
     value: option.value
   })));
   assert.ok(options.every((option) => /(verified|experimental|unavailable)$/.test(option.label)), "Every model option must expose availability.");
+  assert.ok(options.some((option) => option.value === "tiny-aya-global" && /non-commercial · experimental$/.test(option.label)), "Tiny Aya must disclose its license and experimental status without downloading it.");
   const supportedOption = options.find((option) => !option.disabled);
   assert.ok(supportedOption, "At least one model must be compatible with the smoke-test browser.");
   await modelSelect.selectOption(supportedOption.value);
@@ -62,6 +67,7 @@ try {
   await assertVisible(textarea, "mobile prompt textarea");
   await assertVisible(modelSelect, "mobile model selector");
   await assertWithinViewport(modelSelect, 320, "mobile model selector");
+  await assertWithinViewport(storageStatus, 320, "mobile browser storage status");
   const widths = await activePage.evaluate(() => ({
     body: document.body.scrollWidth,
     document: document.documentElement.scrollWidth,
@@ -73,6 +79,19 @@ try {
   await activePage.waitForTimeout(100);
   if (runtimeErrors.length > 0) throw new Error("Runtime browser errors were detected.");
   await desktopContext.close();
+
+  const fallbackContext = await browser.newContext({ viewport: { width: 320, height: 800 } });
+  await fallbackContext.addInitScript(() => Object.defineProperty(Navigator.prototype, "storage", { configurable: true, get: () => undefined }));
+  activePage = await fallbackContext.newPage();
+  captureRuntimeErrors(activePage);
+  await openPage(activePage);
+  const fallbackStorage = activePage.getByTestId("browser-storage");
+  await assertVisible(fallbackStorage, "unavailable browser storage status");
+  await activePage.waitForFunction(() => document.querySelector('[data-testid="browser-storage"]')?.getAttribute("data-state") === "unavailable", undefined, { timeout: timeoutMs });
+  assert.match((await fallbackStorage.textContent()) ?? "", /Browser storage · Unavailable/);
+  if (runtimeErrors.length > 0) throw new Error("Runtime browser errors were detected.");
+  await fallbackContext.close();
+  console.log("✓ Browser storage fallback handles unsupported browsers");
   console.log(`UI smoke test passed: ${url}`);
 } catch (error) {
   const screenshotPath = "/tmp/sophon-smoke-ui-failure.png";
