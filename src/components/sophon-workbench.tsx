@@ -7,7 +7,7 @@ import { InspectableMessage, type InspectableToken } from "@/components/token-le
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Button } from "@/components/ui/button";
 import { Message, MessageAvatar, MessageContent } from "@/components/ui/message";
-import { cancelGeneration, getCapabilities, runPrompt, terminateRuntimeWorker, unloadModel } from "@/lib/interp-client";
+import { cancelGeneration, getCapabilities, preloadModel, runPrompt, terminateRuntimeWorker } from "@/lib/interp-client";
 import { DEFAULT_ONNX_MODEL, MODEL_REGISTRY, resolveModelProvider, type ModelManifest } from "@/lib/onnx-models";
 import type { GenerationTelemetryEvent, OnnxLogEvent, RuntimeCapabilities } from "@/lib/onnx-types";
 import { cn } from "@/lib/utils";
@@ -34,6 +34,7 @@ type FailedTurn = {
 
 type GenerationState =
   | { status: "idle" }
+  | { status: "loading"; activity: RuntimeActivity }
   | { status: "running"; activity: RuntimeActivity; turn: Omit<FailedTurn, "reason"> };
 type BrowserStorage = StorageEstimate & { persistent: boolean };
 
@@ -58,16 +59,16 @@ export function SophonWorkbench() {
   const [capabilities, setCapabilities] = useState<RuntimeCapabilities | null>(null);
   const [browserStorage, setBrowserStorage] = useState<BrowserStorage | null>();
   const generationIdRef = useRef(0);
-  const warmupAbortRef = useRef<AbortController | null>(null);
   const messageEndRef = useRef<HTMLDivElement>(null);
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const isRunning = generation.status === "running";
-  const runtimeActivity = generation.status === "running" ? generation.activity : null;
+  const isBusy = generation.status !== "idle";
+  const runtimeActivity = generation.status === "idle" ? null : generation.activity;
   const selectedModel = MODEL_REGISTRY.find((model) => model.id === modelId) ?? DEFAULT_ONNX_MODEL;
   const modelCompatibility = getModelCompatibility(capabilities, selectedModel);
   const runtimeStatus = getRuntimeStatus(capabilities, selectedModel, loadedModelId, runtimeActivity);
   const storageLabel = browserStorage === undefined ? "Checking…" : browserStorage === null ? "Unavailable" : `${formatStorageBytes(browserStorage.usage)} / ${formatStorageBytes(browserStorage.quota)} · ${browserStorage.persistent ? "Persistent" : "Best effort"}`;
-  const canSend = prompt.trim().length > 0 && !isRunning && modelCompatibility === "compatible";
+  const canSend = prompt.trim().length > 0 && !isBusy && modelCompatibility === "compatible";
 
   useEffect(() => {
     let active = true;
@@ -94,31 +95,25 @@ export function SophonWorkbench() {
   }, [loadedModelId]);
 
   useEffect(() => {
-    const connection = navigator as Navigator & { connection?: { saveData?: boolean } };
-    if (!capabilities || !resolveModelProvider(DEFAULT_ONNX_MODEL, capabilities) || connection.connection?.saveData) return;
-    const controller = new AbortController();
-    warmupAbortRef.current = controller;
-    const warm = () => {
-      if (controller.signal.aborted || document.visibilityState !== "visible") return;
-      void runPrompt([{ role: "user", content: "Sophon" }], {
-        maxNewTokens: 1,
-        modelId: DEFAULT_ONNX_MODEL.id,
-        signal: controller.signal,
-        temperature: 0.05,
-        topK: 1
-      }).then((response) => {
-        if (response.ok && !controller.signal.aborted) setLoadedModelId(DEFAULT_ONNX_MODEL.id);
-      }).catch(() => undefined);
-    };
-    const idleId = window.requestIdleCallback?.(warm, { timeout: 4_000 });
-    const timeoutId = idleId === undefined ? window.setTimeout(warm, 1_500) : null;
+    if (!capabilities || !resolveModelProvider(selectedModel, capabilities)) return;
+    const loadId = generationIdRef.current += 1;
+    queueMicrotask(() => {
+      if (generationIdRef.current === loadId) setGeneration({ status: "loading", activity: { detail: `${selectedModel.label} · ${selectedModel.format.sizeLabel}`, label: "Preparing local model", phase: "runtime" } });
+    });
+    void preloadModel(selectedModel.id, (event) => {
+      if (generationIdRef.current === loadId) setGeneration((current) => current.status === "loading" ? { ...current, activity: activityFromLog(event) } : current);
+    }).then(() => {
+      if (generationIdRef.current === loadId) setLoadedModelId(selectedModel.id);
+    }).catch((caught) => {
+      if (generationIdRef.current === loadId) setError(caught instanceof Error ? caught.message : `${selectedModel.label} could not load.`);
+    }).finally(() => {
+      if (generationIdRef.current === loadId) setGeneration({ status: "idle" });
+    });
     return () => {
-      controller.abort();
-      if (idleId !== undefined) window.cancelIdleCallback?.(idleId);
-      if (timeoutId !== null) window.clearTimeout(timeoutId);
-      if (warmupAbortRef.current === controller) warmupAbortRef.current = null;
+      if (generationIdRef.current === loadId) generationIdRef.current += 1;
+      terminateRuntimeWorker();
     };
-  }, [capabilities]);
+  }, [capabilities, selectedModel]);
 
   useEffect(() => {
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -131,7 +126,6 @@ export function SophonWorkbench() {
   }, []);
 
   function resetChat() {
-    warmupAbortRef.current?.abort();
     generationIdRef.current += 1;
     if (isRunning) {
       void cancelGeneration().catch(() => terminateRuntimeWorker());
@@ -146,16 +140,13 @@ export function SophonWorkbench() {
 
   function selectModel(nextModelId: string) {
     if (nextModelId === modelId) return;
-    const previousModelId = modelId;
-    warmupAbortRef.current?.abort();
+    generationIdRef.current += 1;
+    terminateRuntimeWorker();
     setModelId(nextModelId);
     setLoadedModelId(null);
     setError(null);
     setFailedTurn(null);
     setGeneration({ status: "idle" });
-    void unloadModel(previousModelId).catch(() => {
-      setError("The previous model could not be released. You can continue with the selected model.");
-    });
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -169,8 +160,7 @@ export function SophonWorkbench() {
   async function submitPrompt(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
     const text = prompt.trim();
-    if (!text || isRunning) return;
-    warmupAbortRef.current?.abort();
+    if (!text || isBusy) return;
 
     if (modelCompatibility !== "compatible") {
       setError(modelCompatibility === "probing"
@@ -283,7 +273,7 @@ export function SophonWorkbench() {
   }
 
   function retryFailedTurn() {
-    if (!failedTurn || isRunning || modelCompatibility !== "compatible") return;
+    if (!failedTurn || isBusy || modelCompatibility !== "compatible") return;
     const generationId = generationIdRef.current += 1;
     setError(null);
     setFailedTurn(null);
@@ -291,7 +281,7 @@ export function SophonWorkbench() {
   }
 
   function editFailedTurn() {
-    if (!failedTurn || isRunning) return;
+    if (!failedTurn || isBusy) return;
     const failedIndex = messages.findIndex((message) => message.id === failedTurn.messageId);
     setMessages(failedIndex >= 0 ? messages.slice(0, failedIndex) : messages);
     setPrompt(failedTurn.text);
@@ -301,7 +291,7 @@ export function SophonWorkbench() {
   }
 
   function editMessage(message: ChatMessage, index: number) {
-    if (isRunning || message.role !== "user") return;
+    if (isBusy || message.role !== "user") return;
     setMessages(messages.slice(0, index));
     setPrompt(message.content);
     setError(null);
@@ -310,7 +300,7 @@ export function SophonWorkbench() {
   }
 
   function regenerateLatest(assistantIndex: number) {
-    if (isRunning || modelCompatibility !== "compatible") return;
+    if (isBusy || modelCompatibility !== "compatible") return;
     const userIndex = messages.slice(0, assistantIndex).findLastIndex((message) => message.role === "user");
     const userMessage = messages[userIndex];
     if (!userMessage) return;
@@ -333,7 +323,7 @@ export function SophonWorkbench() {
   }
 
   return (
-    <main className="relative h-svh w-full overflow-hidden bg-sophon-canvas text-foreground" data-inference={isRunning ? "active" : "idle"}>
+    <main className="relative h-svh w-full overflow-hidden bg-sophon-canvas text-foreground" data-inference={isBusy ? "active" : "idle"}>
       <div aria-hidden="true" className="sophon-noise pointer-events-none absolute inset-0" />
       <div aria-hidden="true" className="sophon-grid pointer-events-none absolute inset-0 opacity-45" />
       <div className="relative flex h-svh w-full flex-col bg-transparent">
@@ -357,17 +347,17 @@ export function SophonWorkbench() {
               <span aria-hidden="true" className={cn("size-1.5 rounded-full", runtimeStatus.dotClassName)} />
               {runtimeStatus.label}
             </div>
-            <Button aria-label="New session" className="hidden rounded-xl sm:inline-flex" disabled={isRunning} onClick={resetChat} size="sm" type="button" variant="sophon">
+            <Button aria-label="New session" className="hidden rounded-xl sm:inline-flex" disabled={isBusy} onClick={resetChat} size="sm" type="button" variant="sophon">
               <Plus aria-hidden="true" /> New session
             </Button>
-            <SophonModelSelector capabilities={capabilities} disabled={isRunning} modelId={modelId} onSelect={selectModel} />
+            <SophonModelSelector capabilities={capabilities} disabled={isRunning} loading={generation.status === "loading"} modelId={modelId} onSelect={selectModel} />
           </div>
         </header>
 
         <div aria-atomic="true" aria-live="polite" className="sr-only" role="status">{runtimeActivity?.label ?? ""}</div>
 
         <div className="min-h-0 flex-1">
-          <section aria-busy={isRunning} aria-label="Conversation" className="relative flex h-full min-h-0 min-w-0 flex-col">
+          <section aria-busy={isBusy} aria-label="Conversation" className="relative flex h-full min-h-0 min-w-0 flex-col">
             <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
               <div className="mx-auto flex min-w-0 w-full max-w-6xl flex-col px-4 py-6 sm:px-12 sm:py-9">
                 <div aria-live={isRunning ? "off" : "polite"} aria-relevant="additions text" className="min-w-0 space-y-6" role="log">
@@ -379,8 +369,8 @@ export function SophonWorkbench() {
                       <MessageContent className="w-full max-w-[calc(100%_-_2.75rem)] sm:max-w-[min(920px,calc(100%_-_3rem))]">
                         <InspectableMessage content={message.content} meta={message.meta} role={message.role} tokens={message.tokens} />
                         <MessageActions
-                          canEdit={!isRunning && message.role === "user" && message.id !== "assistant-welcome"}
-                          canRegenerate={!isRunning && message.role === "assistant" && index === messages.length - 1 && index > 0}
+                          canEdit={!isBusy && message.role === "user" && message.id !== "assistant-welcome"}
+                          canRegenerate={!isBusy && message.role === "assistant" && index === messages.length - 1 && index > 0}
                           copied={copiedMessageId === message.id}
                           onCopy={() => void copyMessage(message)}
                           onEdit={() => editMessage(message, index)}

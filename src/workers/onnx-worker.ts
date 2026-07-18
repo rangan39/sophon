@@ -1,4 +1,4 @@
-import { getRuntimeCapabilities, runOnnxTextModel, unloadOnnxModel } from "@/lib/onnx-runner";
+import { getRuntimeCapabilities, preloadOnnxModel, runOnnxTextModel } from "@/lib/onnx-runner";
 import type { GenerationTelemetryEvent, OnnxLogEvent } from "@/lib/onnx-types";
 import { isWorkerRequest, type WorkerRequest } from "@/lib/onnx-worker-protocol";
 
@@ -68,7 +68,7 @@ async function runQueuedRequest(request: Exclude<WorkerRequest, { type: "capabil
       }));
       return;
     }
-    await unloadOnnxModel(request.modelId);
+    await preloadOnnxModel(request.modelId, (event) => postLog(request.requestId, event));
     complete(request.requestId, { ok: true });
   } catch (error) {
     fail(request.requestId, error);

@@ -30,7 +30,7 @@ const WORKER_TIMEOUT_MS: Record<WorkerRequestType, number> = {
   capabilities: 10_000,
   generate: 30 * 60_000,
   cancel: 10_000,
-  unload: 60_000
+  preload: 30 * 60_000
 };
 
 let runtimeWorker: Worker | null = null;
@@ -73,8 +73,8 @@ export async function cancelGeneration(targetRequestId = activeGenerationRequest
   return dispatchWorkerRequest({ type: "cancel", targetRequestId }).promise;
 }
 
-export async function unloadModel(modelId?: string) {
-  await dispatchWorkerRequest({ type: "unload", modelId }).promise;
+export async function preloadModel(modelId: string, onLog?: (event: OnnxLogEvent) => void) {
+  await dispatchWorkerRequest({ type: "preload", modelId }, onLog).promise;
 }
 
 export function terminateRuntimeWorker() {
