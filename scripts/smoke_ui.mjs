@@ -31,12 +31,22 @@ try {
   const heading = activePage.getByRole("heading", { name: "SOPHON", exact: true });
   const textarea = activePage.getByRole("textbox", { name: "Message Sophon", exact: true });
   const modelSelect = activePage.getByRole("combobox", { name: /^Choose model\./ });
+  const runtimeControls = activePage.getByRole("group", { name: "Runtime controls", exact: true });
   const sendButton = activePage.getByRole("button", { name: "Send message", exact: true });
   const storageStatus = activePage.getByTestId("browser-storage");
   await assertVisible(heading, "Sophon heading");
   await assertVisible(textarea, "labeled prompt textarea");
   assert.equal(await textarea.getAttribute("placeholder"), "Ask the local model anything...");
   await assertVisible(modelSelect, "model selector");
+  await assertVisible(runtimeControls, "unified runtime control rail");
+  const modelTypography = await runtimeControls.evaluate((rail) => {
+    const model = rail.querySelector("select");
+    const status = rail.querySelector(":scope > div > span:not([aria-hidden])");
+    return { modelSize: getComputedStyle(model).fontSize, statusSize: getComputedStyle(status).fontSize, modelShadow: getComputedStyle(model).textShadow, text: rail.textContent };
+  });
+  assert.equal(modelTypography.modelSize, modelTypography.statusSize, "Model and runtime status labels must share one type scale.");
+  assert.notEqual(modelTypography.modelShadow, "none", "The selected model must carry the orange signal glow.");
+  assert.doesNotMatch(modelTypography.text ?? "", /μ/, "The model selector must not include a decorative icon.");
   await assertVisible(storageStatus, "browser storage status");
   await activePage.waitForFunction(() => document.querySelector('[data-testid="browser-storage"]')?.getAttribute("data-state") === "ready", undefined, { timeout: timeoutMs });
   assert.match((await storageStatus.textContent()) ?? "", /^\s*Browser storage · .+ \/ .+ · (Persistent|Best effort)\s*$/);
@@ -67,6 +77,7 @@ try {
   await assertVisible(textarea, "mobile prompt textarea");
   await assertVisible(modelSelect, "mobile model selector");
   await assertWithinViewport(modelSelect, 320, "mobile model selector");
+  await assertWithinViewport(runtimeControls, 320, "mobile runtime control rail");
   await assertWithinViewport(storageStatus, 320, "mobile browser storage status");
   const widths = await activePage.evaluate(() => ({
     body: document.body.scrollWidth,
@@ -136,6 +147,17 @@ try {
           if (request.modelId === "tiny-gpt2") this.respond({ type: "complete", requestId: request.requestId, result: { ok: true } });
           else window.__finishPreload = () => this.respond({ type: "complete", requestId: request.requestId, result: { ok: true } });
         });
+        if (request.type === "generate") queueMicrotask(() => this.respond({
+          type: "complete",
+          requestId: request.requestId,
+          result: { ok: true, result: {
+            generatedText: "Sharper token controls.",
+            inputTokens: [{ id: 1, text: "Show", inContext: true }, { id: 2, text: " tokens", inContext: true }],
+            generatedTokens: [{ id: 3, text: "Sharper" }, { id: 4, text: " controls." }],
+            outputTokenCount: 2,
+            metrics: { provider: "webgpu", modelLoadMs: 0, endToEndMs: 12, ttftMs: 4, decodeMs: 8, decodeTokensPerSecond: 125, timePerOutputTokenMs: 8, p95InterTokenLatencyMs: 8, promptTokenCount: 2, contextTokenCount: 2, truncatedInputTokens: 0, outputTokenCount: 2 }
+          } }
+        }));
       }
       respond(data) {
         if (!this.terminated) this.onmessage?.({ data });
@@ -159,9 +181,19 @@ try {
   assert.equal((await activePage.evaluate(() => window.__sophonWorkerRequests)).some((request) => request.type === "generate"), false);
   await activePage.evaluate(() => window.__finishPreload());
   await determinateProgress.waitFor({ state: "detached", timeout: timeoutMs });
-  await activePage.getByText("Model ready", { exact: true }).waitFor({ state: "visible", timeout: timeoutMs });
+  await activePage.getByRole("img", { name: "Model ready", exact: true }).waitFor({ state: "visible", timeout: timeoutMs });
+  await activePage.getByRole("textbox", { name: "Message Sophon", exact: true }).fill("Show tokens");
+  await activePage.getByRole("button", { name: "Send message", exact: true }).click();
+  await activePage.waitForFunction(() => document.querySelectorAll('[aria-label="Message display granularity"]').length === 2, undefined, { timeout: timeoutMs });
+  const modeLayout = await activePage.getByRole("group", { name: "Message display granularity", exact: true }).evaluateAll((groups) => groups.map((group) => {
+    const box = group.getBoundingClientRect();
+    return { height: box.height, width: box.width, alignment: getComputedStyle(group.parentElement).justifyContent, insideBubble: Boolean(group.closest('[data-slot="bubble-content"]')), labels: [...group.querySelectorAll("button")].map((button) => button.textContent?.trim()) };
+  }));
+  assert.equal(modeLayout.length, 2);
+  assert.ok(modeLayout.every(({ height, width, alignment, insideBubble, labels }) => insideBubble && alignment === "flex-start" && height <= 28 && width < 150 && labels.join("|") === "text|tokens|words"), `Token mode controls must be compact and left-aligned inside their bubbles: ${JSON.stringify(modeLayout)}`);
+  if (process.env.SOPHON_SMOKE_SCREENSHOT_PATH) await activePage.screenshot({ path: process.env.SOPHON_SMOKE_SCREENSHOT_PATH, fullPage: true });
   await progressContext.close();
-  console.log("✓ Aggregate byte progress renders determinate state and clears at readiness");
+  console.log("✓ Aggregate download progress and compact in-bubble token controls render correctly");
 
   const fallbackContext = await browser.newContext({ viewport: { width: 320, height: 800 } });
   await fallbackContext.addInitScript(() => Object.defineProperty(Navigator.prototype, "storage", { configurable: true, get: () => undefined }));

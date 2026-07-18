@@ -37,15 +37,15 @@
   --color-sophon-glass-border: var(--sophon-glass-border);
   --color-sophon-glass-highlight: var(--sophon-glass-highlight);
   --font-serif: var(--font-cormorant), Cormorant Garamond, EB Garamond, Georgia, ui-serif, serif;
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
+  --radius-sm: 1px;
+  --radius-md: 2px;
+  --radius-lg: 3px;
+  --radius-xl: 4px;
+  --radius-2xl: 6px;
 }
 
 :root {
   color-scheme: dark;
-  --radius: 0.25rem;
   --background: #090a0d;
   --foreground: #f4f0e9;
   --card: #111319;

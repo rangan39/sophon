@@ -328,35 +328,33 @@ export function SophonWorkbench() {
       <div aria-hidden="true" className="sophon-noise pointer-events-none absolute inset-0" />
       <div aria-hidden="true" className="sophon-grid pointer-events-none absolute inset-0 opacity-45" />
       <div className="relative flex h-svh w-full flex-col bg-transparent">
-        <header className="sophon-glass-strong relative z-20 flex h-[calc(74px+env(safe-area-inset-top))] shrink-0 items-center justify-between border-x-0 border-t-0 px-4 pt-[env(safe-area-inset-top)] sm:px-7">
-          <div className="flex min-w-0 items-center gap-3">
-            <div className="relative grid size-10 shrink-0 place-items-center rounded-xl border border-sophon-signal-bright/60 bg-gradient-to-br from-sophon-signal-bright to-sophon-signal text-[#210b07] shadow-[0_0_34px_rgb(255_77_46/.24)]">
-              <GreekGlyph className="text-lg font-semibold">Σ</GreekGlyph>
-              <span aria-hidden="true" className="absolute -right-1 -top-1 size-2 rounded-full bg-sophon-warning shadow-[0_0_12px_var(--sophon-warning)]" />
-            </div>
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <h1 className="font-mono text-sm font-semibold tracking-[0.12em] text-white">SOPHON</h1>
-                <span className="hidden items-center rounded-md border border-sophon-signal-bright/35 bg-sophon-signal/15 px-2 py-0.5 font-mono text-[9px] font-medium uppercase tracking-widest text-[#ffb4a4] min-[360px]:inline-flex">Local AI</span>
+        <header className="sophon-glass-strong relative z-20 h-[calc(68px+env(safe-area-inset-top))] shrink-0 border-x-0 border-t-0 pt-[env(safe-area-inset-top)] !shadow-[inset_0_-1px_0_rgb(255_255_255/.05),0_12px_32px_rgb(0_0_0/.30)] after:pointer-events-none after:absolute after:inset-x-0 after:bottom-0 after:h-px after:bg-gradient-to-r after:from-sophon-signal/50 after:via-white/10 after:to-transparent">
+          <div className="mx-auto flex h-full w-full max-w-6xl items-center justify-between gap-2 px-3 sm:px-12">
+            <div className="flex min-w-0 items-center gap-2.5">
+              <div className="relative grid size-9 shrink-0 place-items-center rounded-xl border border-sophon-signal-bright/60 bg-gradient-to-br from-sophon-signal-bright to-sophon-signal text-[#210b07] shadow-[0_0_28px_rgb(255_77_46/.22)]">
+                <GreekGlyph className="text-lg font-semibold">Σ</GreekGlyph>
               </div>
-              <p className="hidden font-mono text-[10px] uppercase tracking-[0.18em] text-white/60 sm:block">Private inference console</p>
+              <div className="min-w-0">
+                <h1 className="font-mono text-sm font-semibold tracking-[0.12em] text-white">SOPHON</h1>
+                <p className="hidden font-mono text-[9px] uppercase tracking-[0.18em] text-white/55 sm:block">Private inference · browser native</p>
+              </div>
             </div>
-          </div>
 
-          <div className="flex items-center gap-3">
-            <div className={cn("sophon-glass-tile hidden items-center gap-2 rounded-full px-3 py-1.5 font-mono text-[10px] uppercase tracking-widest sm:flex", runtimeStatus.className)}>
-              <span aria-hidden="true" className={cn("size-1.5 rounded-full", runtimeStatus.dotClassName)} />
-              {runtimeStatus.label}{downloadPercent === undefined ? null : ` · ${downloadPercent}%`}
+            <div aria-label="Runtime controls" className="sophon-glass-tile flex h-11 shrink-0 items-stretch overflow-hidden rounded-2xl sm:h-10" role="group">
+              <div aria-label={runtimeStatus.label} className={cn("flex min-w-8 items-center justify-center gap-2 px-2 font-mono text-[9px] uppercase tracking-widest sm:min-w-9 lg:px-3", runtimeStatus.className)} role="img">
+                <span aria-hidden="true" className={cn("size-1.5 rounded-full", runtimeStatus.dotClassName)} />
+                <span className="hidden lg:inline">{runtimeStatus.label}{downloadPercent === undefined ? null : ` · ${downloadPercent}%`}</span>
+              </div>
+              <SophonModelSelector capabilities={capabilities} disabled={isRunning} loading={generation.status === "loading"} modelId={modelId} onSelect={selectModel} />
+              <Button aria-label="New session" className="hidden h-full min-w-10 rounded-none border-0 bg-transparent px-2 text-white/70 shadow-none hover:bg-white/[.07] sm:inline-flex lg:px-3" disabled={isBusy} onClick={resetChat} size="sm" type="button" variant="sophon">
+                <Plus aria-hidden="true" /><span className="hidden font-mono text-[9px] uppercase tracking-widest lg:inline">New session</span>
+              </Button>
             </div>
-            <Button aria-label="New session" className="hidden rounded-xl sm:inline-flex" disabled={isBusy} onClick={resetChat} size="sm" type="button" variant="sophon">
-              <Plus aria-hidden="true" /> New session
-            </Button>
-            <SophonModelSelector capabilities={capabilities} disabled={isRunning} loading={generation.status === "loading"} modelId={modelId} onSelect={selectModel} />
           </div>
-          {isModelLoading ? <span aria-label={`Loading ${selectedModel.label}`} aria-valuemax={100} aria-valuemin={0} aria-valuenow={downloadPercent} aria-valuetext={downloadProgress ? `${formatStorageBytes(downloadProgress.loaded)} of ${formatStorageBytes(downloadProgress.total)} loaded` : "Preparing model download"} className="absolute inset-x-0 bottom-0 h-1 overflow-hidden bg-white/10" role="progressbar"><span className={cn("block h-full bg-gradient-to-r from-sophon-signal to-sophon-signal-bright shadow-[0_0_12px_var(--sophon-signal-bright)] transition-[width] duration-200 motion-reduce:transition-none", downloadPercent === undefined && "w-1/3 animate-pulse motion-reduce:animate-none")} style={downloadPercent === undefined ? undefined : { width: `${downloadPercent}%` }} /></span> : null}
+          {isModelLoading ? <span aria-label={`Loading ${selectedModel.label}`} aria-valuemax={100} aria-valuemin={0} aria-valuenow={downloadPercent} aria-valuetext={downloadProgress ? `${formatStorageBytes(downloadProgress.loaded)} of ${formatStorageBytes(downloadProgress.total)} loaded` : "Preparing model download"} className="absolute inset-x-0 bottom-0 z-10 h-1 overflow-hidden bg-white/10" role="progressbar"><span className={cn("block h-full bg-gradient-to-r from-sophon-signal to-sophon-signal-bright shadow-[0_0_12px_var(--sophon-signal-bright)] transition-[width] duration-200 motion-reduce:transition-none", downloadPercent === undefined && "w-1/3 animate-pulse motion-reduce:animate-none")} style={downloadPercent === undefined ? undefined : { width: `${downloadPercent}%` }} /></span> : null}
         </header>
 
-        <div aria-atomic="true" aria-live="polite" className="sr-only" role="status">{runtimeActivity?.label ?? ""}</div>
+        <div aria-atomic="true" aria-live="polite" className="sr-only" role="status">{runtimeStatus.label}</div>
 
         <div className="min-h-0 flex-1">
           <section aria-busy={isBusy} aria-label="Conversation" className="relative flex h-full min-h-0 min-w-0 flex-col">
