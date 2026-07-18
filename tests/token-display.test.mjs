@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { decodeTokenPieces, groupTokenPieces, markActiveContext } from "../src/lib/token-display.ts";
+import { decodeTokenPieces, groupTokenPieces, markActiveContext, sliceTokenPiecesByTextRange } from "../src/lib/token-display.ts";
 
 test("preserves tokenizer IDs and visible whitespace in token pieces", () => {
   const vocabulary = new Map([[10, "signal"], [20, " arrived"], [30, "\n"]]);
@@ -34,4 +34,27 @@ test("groups subword pieces without changing the rendered text", () => {
 
   assert.equal(groups.map((group) => group.text).join(""), "cosmic molasses:");
   assert.deepEqual(groups.map((group) => group.tokenIds), [[1, 2], [3, 4]]);
+});
+
+test("extracts a message span without prompt labels or boundary whitespace", () => {
+  const source = "User: cosmic molasses\n\nAssistant:";
+  const tokens = [
+    { id: 1, text: "User" },
+    { id: 2, text: ":" },
+    { id: 3, text: " cosmic" },
+    { id: 4, text: " molasses\n\n" },
+    { id: 5, text: "Assistant:" }
+  ];
+  const start = source.indexOf("cosmic");
+  const result = sliceTokenPiecesByTextRange(tokens, source, start, start + "cosmic molasses".length);
+
+  assert.deepEqual(result, [
+    { id: 3, text: "cosmic", inContext: undefined },
+    { id: 4, text: " molasses", inContext: undefined }
+  ]);
+  assert.equal(result.map((token) => token.text).join(""), "cosmic molasses");
+});
+
+test("refuses to map token pieces that do not decode to the source", () => {
+  assert.deepEqual(sliceTokenPiecesByTextRange([{ id: 1, text: "other" }], "prompt", 0, 6), []);
 });

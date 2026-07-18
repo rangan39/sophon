@@ -1,41 +1,39 @@
 # Sophon runtime architecture
 
-Sophon is a browser-side compatibility and benchmark tool for small causal language models in ONNX format. Its support claims are intentionally narrower than its model catalog.
+Sophon is a browser-only local chat and compatibility tool for small causal language models in ONNX format. Its support claims are intentionally narrower than its model catalog.
 
 ## Runtime flow
 
 ```text
 Model manifest
   → persistent model worker
-  → model adapter
+  → Transformers.js pipeline
   → ONNX Runtime provider
-  → token telemetry / generation result / benchmark result
+  → token telemetry / generation result
 ```
 
-The browser owns one long-lived worker. Requests are queued inside that worker so model loading and inference cannot race. Loaded sessions remain available across prompts until the user changes models, explicitly unloads a model, or closes the page.
+The browser owns one long-lived worker. Requests are queued inside that worker so model loading and inference cannot race. Loaded sessions remain available across prompts until the user changes models, explicitly unloads a model, or closes the page. Generation cancellation is request-scoped so stopping a response preserves the loaded model cache. A shared discriminated protocol validates requests, events, and completed results at the worker boundary. Operations have recovery timeouts; a timed-out or malformed worker is terminated so the UI cannot remain pending forever.
+
+## Repository boundary
+
+Sophon has no inference server or server fallback. Next.js delivers the application shell and versioned static model files; the Web Worker owns tokenization, model sessions, generation, and telemetry. Remote experimental artifacts are fetched directly by Transformers.js from their pinned Hugging Face revisions. Prompts are never routed through a repository-owned API.
 
 ## Model support levels
 
 - `verified`: Sophon has a known graph contract and has validated the model against its own runtime.
-- `experimental`: a compatible repository is known, but Sophon has not certified the graph, tokenizer, provider support, and benchmark behavior together.
+- `experimental`: a compatible repository is known, but Sophon has not certified the graph, tokenizer, provider support, and generation behavior together.
 
 Only verified entries should be treated as supported. Experimental entries are available for compatibility work and may fail on a particular browser or device.
 
-## Adapters
+## Unified model adapter
 
-### Full-context ONNX
+Bundled and remote models use the Transformers.js text-generation pipeline. The pipeline owns architecture-specific ONNX sessions, KV-cache tensors, sampling, browser caching, and provider integration. A `TextStreamer` timestamps generated token IDs before the completed result returns, while request-scoped stopping criteria cancel generation without destroying the loaded pipeline.
 
-The bundled Tiny GPT-2 model uses `input_ids` and `attention_mask` and returns `logits`. It recomputes the active context for each generated token. This is a useful correctness baseline but is not suitable for scaling to larger models.
+The bundled Tiny GPT-2 graph exposes explicit past-key/value inputs and present-key/value outputs. It supports a 1,024-position context and runs through the same adapter as remote models. Sophon reserves output-token capacity, removes the oldest complete conversation turns when necessary, and left-truncates only when one remaining turn still exceeds the budget.
 
-The UI accepts prompts of arbitrary length. Because the bundled graph has a fixed 64-token context, the adapter applies a sliding window and sends the most recent 64 tokens. Results report the original prompt token count, active context count, and number of omitted earlier tokens.
+The tracked bundle totals 4,051,176 bytes. Its ONNX graph is 491,629 bytes, its tokenizer is 3,558,232 bytes, and the configuration files total 1,315 bytes. The public URL includes the aggregate content-hash prefix `v-196cb8befc7d`; Next.js rewrites that URL to the single tracked copy and serves it with a one-year immutable cache policy.
 
-### Transformers.js
-
-Experimental remote models use the Transformers.js text-generation pipeline. The pipeline owns architecture-specific generation and KV-cache handling. Sophon requires access to the pipeline tokenizer so input and output token counts are real tokenizer counts rather than whitespace estimates. A Transformers.js `TextStreamer` timestamps generated token IDs before the completed pipeline result returns.
-
-### With-past ONNX
-
-A native generic KV-cache adapter is deliberately deferred. It requires model exports with explicit past-key/value inputs and present-key/value outputs, plus architecture-specific tensor naming and dimensions. It should be added only alongside a verified model artifact and conformance fixture.
+Instruction-model conversations remain structured until they reach the pipeline, allowing each tokenizer to apply its native chat template. GPT-2 uses a completion-style role transcript with an assistant cue.
 
 ## Metrics
 
@@ -61,20 +59,18 @@ TPOT       = (t[n-1] - t[0]) / (n - 1)
 
 Decode TPS and TPOT remain unavailable until at least two output tokens exist. Sophon does not estimate browser GPU memory because browsers do not expose a reliable cross-platform value.
 
-The runtime panel's default-on telemetry toggle instruments normal chat requests. Request-scoped worker events update the HUD during decoding and freeze as `Last run` when generation completes. They do not launch extra inference or block chat.
+Request-scoped worker events expose the same measurements during decoding without launching extra inference or blocking chat. Completed metrics are attached to the generation result, and the compact chat metadata surfaces the most useful values without a permanent telemetry panel.
+
+## Cross-origin isolation
+
+COOP/COEP headers are intentionally deferred. The experimental model path can follow Hugging Face redirects to multiple signed artifact and CDN origins, and the repository does not yet run a conformance check proving that every response in that chain satisfies COEP. Enabling cross-origin isolation before that check could block otherwise valid remote model downloads. Add the headers only alongside an end-to-end delivery test for every supported remote source.
 
 ## Token display
 
-Generation results include exact tokenizer IDs and individually decoded text for both the original input and generated output. The chat UI highlights those pieces directly and exposes the token index and vocabulary ID on hover or keyboard focus. Input tokens removed by the sliding context window remain visible but are marked as windowed out.
-
-## Benchmarks
-
-The separate quick benchmark API uses fixed prompts, one warm-up run per prompt, deterministic greedy decoding, and three measured runs per prompt. It reports median TTFT, end-to-end latency, decode throughput, and TPOT. It does not auto-run or feed the live HUD. This is intended for controlled comparisons on one device, not for claiming results across machines.
+Generation results include exact tokenizer IDs and individually decoded text for the latest user turn and generated output. Messages render as clean text by default; the opt-in token and word modes expose boundaries, token indexes, vocabulary IDs, and active-context state on hover, click, or keyboard focus. Input tokens removed by context truncation remain visible but are marked as windowed out.
 
 ## Next technical milestones
 
-1. Add a verified `with-past` model export and native KV-cache adapter.
-2. Pin verified remote repositories to immutable revisions and record artifact sizes/checksums.
-3. Cache fetched model artifacts with revision-aware keys and expose storage controls.
-4. Add model conformance fixtures that validate tokenizer, graph inputs/outputs, EOS behavior, and provider compatibility.
-5. Add a larger benchmark mode with enough measured samples for percentile reporting and browser/GPU metadata.
+1. Record remote artifact sizes/checksums and define a review process for updating pinned revisions.
+2. Add model conformance fixtures that validate tokenizer, graph inputs/outputs, EOS behavior, chat templates, and provider compatibility.
+3. Add a cross-origin delivery test before enabling threaded-WASM isolation headers.

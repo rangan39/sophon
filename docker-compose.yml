@@ -1,53 +1,18 @@
 services:
-  interp-api:
-    build:
-      context: ./services/interp-api
-      dockerfile: Dockerfile
-    ports:
-      - "${BACKEND_PORT:-8000}:8000"
-    environment:
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
-      AUTH_TOKEN: ${AUTH_TOKEN:-}
-      HF_HOME: /cache/huggingface
-      TRANSFORMERS_CACHE: /cache/huggingface/transformers
-      TORCH_HOME: /cache/torch
-    volumes:
-      - ./services/interp-api:/app
-      - huggingface_cache:/cache/huggingface
-      - torch_cache:/cache/torch
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')",
-        ]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 30s
-
   frontend:
     build:
       context: .
       dockerfile: Dockerfile.frontend
+      target: development
     ports:
       - "${FRONTEND_PORT:-3000}:3000"
     environment:
-      INTERP_API_URL: http://interp-api:8000
-      INTERP_API_TOKEN: ${INTERP_API_TOKEN:-}
       NEXT_TELEMETRY_DISABLED: "1"
     volumes:
       - .:/app
       - frontend_node_modules:/app/node_modules
       - frontend_next:/app/.next
-    depends_on:
-      interp-api:
-        condition: service_healthy
 
 volumes:
   frontend_node_modules:
   frontend_next:
-  huggingface_cache:
-  torch_cache:

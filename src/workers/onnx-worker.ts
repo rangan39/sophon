@@ -1,14 +1,9 @@
-import { benchmarkOnnxModel, getRuntimeCapabilities, loadOnnxModel, runOnnxTextModel, unloadOnnxModel } from "@/lib/onnx-runner";
-import type { BenchmarkSuite, GenerationTelemetryEvent, OnnxLogEvent, OnnxRunOptions } from "@/lib/onnx-types";
-
-type WorkerRequest =
-  | { type: "capabilities"; requestId: string }
-  | { type: "load"; requestId: string; modelId: string }
-  | { type: "generate"; requestId: string; prompt: string; modelId: string; options: Pick<OnnxRunOptions, "maxNewTokens" | "temperature" | "topK"> }
-  | { type: "benchmark"; requestId: string; modelId: string; suite: BenchmarkSuite; measuredRuns: number }
-  | { type: "unload"; requestId: string; modelId?: string };
+import { getRuntimeCapabilities, runOnnxTextModel, unloadOnnxModel } from "@/lib/onnx-runner";
+import type { GenerationTelemetryEvent, OnnxLogEvent } from "@/lib/onnx-types";
+import { isWorkerRequest, type WorkerRequest } from "@/lib/onnx-worker-protocol";
 
 let taskQueue = Promise.resolve();
+const generationControllers = new Map<string, AbortController>();
 
 function postLog(requestId: string, event: OnnxLogEvent) {
   self.postMessage({ type: "log", requestId, event });
@@ -30,41 +25,59 @@ function fail(requestId: string, error: unknown) {
   });
 }
 
-self.onmessage = (message: MessageEvent<WorkerRequest>) => {
+self.onmessage = (message: MessageEvent<unknown>) => {
   const request = message.data;
-  if (!request?.requestId) return;
-
-  if (request.type === "capabilities") {
-    complete(request.requestId, getRuntimeCapabilities());
+  if (!isWorkerRequest(request)) {
+    const requestId = readRequestId(request);
+    if (requestId) fail(requestId, new Error("The model worker received an invalid request."));
     return;
   }
 
-  taskQueue = taskQueue.then(async () => {
-    try {
-      if (request.type === "load") {
-        complete(request.requestId, await loadOnnxModel(request.modelId, (event) => postLog(request.requestId, event)));
-        return;
-      }
-      if (request.type === "generate") {
-        complete(request.requestId, await runOnnxTextModel(request.prompt, {
-          modelId: request.modelId,
-          ...request.options,
-          onLog: (event) => postLog(request.requestId, event),
-          onTelemetry: (telemetry) => postTelemetry(request.requestId, telemetry)
-        }));
-        return;
-      }
-      if (request.type === "benchmark") {
-        complete(request.requestId, await benchmarkOnnxModel(request.modelId, request.suite, {
-          measuredRuns: request.measuredRuns,
-          onLog: (event) => postLog(request.requestId, event)
-        }));
-        return;
-      }
-      await unloadOnnxModel(request.modelId);
-      complete(request.requestId, { ok: true });
-    } catch (error) {
-      fail(request.requestId, error);
-    }
-  });
+  if (request.type === "capabilities") {
+    void getRuntimeCapabilities()
+      .then((capabilities) => complete(request.requestId, capabilities))
+      .catch((error) => fail(request.requestId, error));
+    return;
+  }
+
+  if (request.type === "cancel") {
+    const controller = generationControllers.get(request.targetRequestId);
+    const cancelled = Boolean(controller && !controller.signal.aborted);
+    controller?.abort();
+    complete(request.requestId, { cancelled, targetRequestId: request.targetRequestId });
+    return;
+  }
+
+  if (request.type === "generate") {
+    generationControllers.set(request.requestId, new AbortController());
+  }
+
+  taskQueue = taskQueue.then(() => runQueuedRequest(request));
 };
+
+async function runQueuedRequest(request: Exclude<WorkerRequest, { type: "capabilities" | "cancel" }>) {
+  try {
+    if (request.type === "generate") {
+      const controller = generationControllers.get(request.requestId);
+      complete(request.requestId, await runOnnxTextModel(request.messages, {
+        modelId: request.modelId,
+        ...request.options,
+        signal: controller?.signal,
+        onLog: (event) => postLog(request.requestId, event),
+        onTelemetry: (telemetry) => postTelemetry(request.requestId, telemetry)
+      }));
+      return;
+    }
+    await unloadOnnxModel(request.modelId);
+    complete(request.requestId, { ok: true });
+  } catch (error) {
+    fail(request.requestId, error);
+  } finally {
+    if (request.type === "generate") generationControllers.delete(request.requestId);
+  }
+}
+
+function readRequestId(value: unknown) {
+  if (typeof value !== "object" || value === null || !("requestId" in value)) return null;
+  return typeof value.requestId === "string" ? value.requestId : null;
+}

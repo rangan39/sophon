@@ -2,11 +2,11 @@ export type ModelProvider = "webgpu" | "wasm";
 export type ModelVerification = "verified" | "experimental";
 export type ModelFamily = "gpt2" | "smollm" | "qwen" | "llama";
 
+const BUNDLED_MODEL_BASE_URL = "/models/v-196cb8befc7d/sshleifer-tiny-gpt2-trace";
+
 type LocalModelSource = {
   kind: "local";
   baseUrl: string;
-  metadataUrl: string;
-  modelPath: string;
   revision: "bundled";
 };
 
@@ -24,49 +24,43 @@ export type ModelManifest = {
   verification: ModelVerification;
   source: LocalModelSource | HuggingFaceModelSource;
   format: {
-    weights: "onnx";
     quantization: "fp32" | "fp16" | "int8" | "q4";
     sizeLabel: string;
     sizeBytes: number | null;
     contextLength: number | null;
   };
-  graph: {
-    adapter: "full-context" | "transformers-js";
-    generation: "full-context" | "with-past";
-    inputNames: readonly string[];
-    outputNames: readonly string[];
-  };
   providers: readonly ModelProvider[];
 };
 
-export const MODEL_REGISTRY: readonly ModelManifest[] = [
+export function resolveModelProvider(
+  model: Pick<ModelManifest, "providers">,
+  capabilities: Readonly<Record<ModelProvider, boolean>>
+): ModelProvider | null {
+  for (const provider of model.providers) {
+    if (capabilities[provider]) return provider;
+  }
+  return null;
+}
+
+export const MODEL_REGISTRY = [
   {
     id: "tiny-gpt2",
     label: "Tiny GPT-2",
     family: "gpt2",
-    description: "Bundled baseline used to verify Sophon's ONNX/WebGPU runtime.",
+    description: "Bundled cached-decoder baseline used to verify Sophon's local runtime.",
     verification: "verified",
     source: {
       kind: "local",
-      baseUrl: "/models/sshleifer-tiny-gpt2-trace",
-      metadataUrl: "/models/sshleifer-tiny-gpt2-trace/sophon-trace.json",
-      modelPath: "/models/sshleifer-tiny-gpt2-trace/onnx/model.onnx",
+      baseUrl: BUNDLED_MODEL_BASE_URL,
       revision: "bundled"
     },
     format: {
-      weights: "onnx",
       quantization: "fp32",
-      sizeLabel: "15 MB",
-      sizeBytes: 15_000_000,
-      contextLength: 128
+      sizeLabel: "4.1 MB",
+      sizeBytes: 4_051_176,
+      contextLength: 1024
     },
-    graph: {
-      adapter: "full-context",
-      generation: "full-context",
-      inputNames: ["input_ids", "attention_mask"],
-      outputNames: ["logits"]
-    },
-    providers: ["webgpu"]
+    providers: ["wasm", "webgpu"]
   },
   {
     id: "smollm2-135m",
@@ -74,9 +68,8 @@ export const MODEL_REGISTRY: readonly ModelManifest[] = [
     family: "smollm",
     description: "Small instruction model; repository compatibility is not yet certified by Sophon.",
     verification: "experimental",
-    source: { kind: "huggingface", repo: "onnx-community/SmolLM2-135M-Instruct-ONNX", revision: "main" },
-    format: { weights: "onnx", quantization: "q4", sizeLabel: "~140 MB", sizeBytes: null, contextLength: null },
-    graph: { adapter: "transformers-js", generation: "with-past", inputNames: [], outputNames: [] },
+    source: { kind: "huggingface", repo: "onnx-community/SmolLM2-135M-Instruct-ONNX", revision: "b8a5c0f183b78c55955a5364f610c36668b5e681" },
+    format: { quantization: "q4", sizeLabel: "~140 MB", sizeBytes: null, contextLength: null },
     providers: ["webgpu", "wasm"]
   },
   {
@@ -85,9 +78,8 @@ export const MODEL_REGISTRY: readonly ModelManifest[] = [
     family: "smollm",
     description: "Larger SmolLM2 variant; repository compatibility is not yet certified by Sophon.",
     verification: "experimental",
-    source: { kind: "huggingface", repo: "HuggingFaceTB/SmolLM2-360M-Instruct", revision: "main" },
-    format: { weights: "onnx", quantization: "q4", sizeLabel: "~360 MB", sizeBytes: null, contextLength: null },
-    graph: { adapter: "transformers-js", generation: "with-past", inputNames: [], outputNames: [] },
+    source: { kind: "huggingface", repo: "HuggingFaceTB/SmolLM2-360M-Instruct", revision: "a10cc1512eabd3dde888204e902eca88bddb4951" },
+    format: { quantization: "q4", sizeLabel: "~360 MB", sizeBytes: null, contextLength: null },
     providers: ["webgpu", "wasm"]
   },
   {
@@ -96,9 +88,8 @@ export const MODEL_REGISTRY: readonly ModelManifest[] = [
     family: "qwen",
     description: "Coding-focused model; repository compatibility is not yet certified by Sophon.",
     verification: "experimental",
-    source: { kind: "huggingface", repo: "onnx-community/Qwen2.5-Coder-0.5B-Instruct", revision: "main" },
-    format: { weights: "onnx", quantization: "q4", sizeLabel: "~500 MB", sizeBytes: null, contextLength: null },
-    graph: { adapter: "transformers-js", generation: "with-past", inputNames: [], outputNames: [] },
+    source: { kind: "huggingface", repo: "onnx-community/Qwen2.5-Coder-0.5B-Instruct", revision: "f0292f665fd307846ff3c318a91a1bc29d091492" },
+    format: { quantization: "q4", sizeLabel: "~500 MB", sizeBytes: null, contextLength: null },
     providers: ["webgpu"]
   },
   {
@@ -107,9 +98,8 @@ export const MODEL_REGISTRY: readonly ModelManifest[] = [
     family: "llama",
     description: "Desktop-class model; repository compatibility is not yet certified by Sophon.",
     verification: "experimental",
-    source: { kind: "huggingface", repo: "onnx-community/Llama-3.2-1B-Instruct-ONNX", revision: "main" },
-    format: { weights: "onnx", quantization: "q4", sizeLabel: "~1 GB", sizeBytes: null, contextLength: null },
-    graph: { adapter: "transformers-js", generation: "with-past", inputNames: [], outputNames: [] },
+    source: { kind: "huggingface", repo: "onnx-community/Llama-3.2-1B-Instruct-ONNX", revision: "14007543b6dc92de88daf96a9aa85d2f95ace6ef" },
+    format: { quantization: "q4", sizeLabel: "~1 GB", sizeBytes: null, contextLength: null },
     providers: ["webgpu"]
   },
   {
@@ -118,19 +108,20 @@ export const MODEL_REGISTRY: readonly ModelManifest[] = [
     family: "qwen",
     description: "Large experimental model intended for high-memory desktop GPUs.",
     verification: "experimental",
-    source: { kind: "huggingface", repo: "onnx-community/Qwen3-1.7B-ONNX", revision: "main" },
-    format: { weights: "onnx", quantization: "q4", sizeLabel: "~1.7 GB", sizeBytes: null, contextLength: null },
-    graph: { adapter: "transformers-js", generation: "with-past", inputNames: [], outputNames: [] },
+    source: { kind: "huggingface", repo: "onnx-community/Qwen3-1.7B-ONNX", revision: "cc6a06a21d614e9b8e92a6adfab1074d4e7d2438" },
+    format: { quantization: "q4", sizeLabel: "~1.7 GB", sizeBytes: null, contextLength: null },
     providers: ["webgpu"]
   }
-] as const;
+] as const satisfies readonly [ModelManifest, ...ModelManifest[]];
 
 export const DEFAULT_ONNX_MODEL = MODEL_REGISTRY[0];
 
-export function getModelDefinition(id = DEFAULT_ONNX_MODEL.id) {
+export function getModelDefinition(id: string = DEFAULT_ONNX_MODEL.id) {
   return MODEL_REGISTRY.find((model) => model.id === id) ?? DEFAULT_ONNX_MODEL;
 }
 
-export function getModelRepo(model: ModelManifest) {
-  return model.source.kind === "huggingface" ? model.source.repo : "sshleifer/tiny-gpt2";
+export function requireModelDefinition(id: string = DEFAULT_ONNX_MODEL.id) {
+  const model = MODEL_REGISTRY.find((candidate) => candidate.id === id);
+  if (!model) throw new Error(`Unknown model identifier: ${id}`);
+  return model;
 }

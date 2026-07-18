@@ -1,188 +1,448 @@
 "use client";
 
-import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
-import { Activity, CircleUserRound, LoaderCircle, MessageSquareText, PanelLeft, Plus, SendHorizontal } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import { Message, MessageAvatar, MessageContent } from "@/components/ui/message";
-import { Bubble, BubbleContent } from "@/components/ui/bubble";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { type FormEvent, type KeyboardEvent, useEffect, useRef, useState } from "react";
+import { Check, CircleUserRound, Copy, LoaderCircle, Pencil, Plus, RotateCcw, SendHorizontal, Square } from "lucide-react";
 import { SophonModelSelector } from "@/components/sophon-model-selector";
-import { Textarea } from "@/components/ui/textarea";
 import { InspectableMessage, type InspectableToken } from "@/components/token-lens";
-import { DEFAULT_ONNX_MODEL, MODEL_REGISTRY } from "@/lib/onnx-models";
-import { getCapabilities, runPrompt, unloadModel } from "@/lib/interp-client";
-import type { RuntimeCapabilities } from "@/lib/onnx-types";
+import { Bubble, BubbleContent } from "@/components/ui/bubble";
+import { Button } from "@/components/ui/button";
+import { Message, MessageAvatar, MessageContent } from "@/components/ui/message";
+import { cancelGeneration, getCapabilities, runPrompt, terminateRuntimeWorker, unloadModel } from "@/lib/interp-client";
+import { DEFAULT_ONNX_MODEL, MODEL_REGISTRY, resolveModelProvider, type ModelManifest } from "@/lib/onnx-models";
+import type { GenerationTelemetryEvent, OnnxLogEvent, RuntimeCapabilities } from "@/lib/onnx-types";
+import { cn } from "@/lib/utils";
 
 type ChatMessage = {
-  id: number;
+  id: string;
   role: "user" | "assistant";
   content: string;
   meta?: string;
   tokens?: InspectableToken[];
 };
 
-function GreekGlyph({ children, className = "" }: { children: string; className?: string }) {
-  return <span aria-hidden="true" className={`font-serif text-base leading-none ${className}`}>{children}</span>;
-}
+type RuntimeActivity = {
+  detail?: string;
+  label: string;
+  phase: "download" | "runtime" | "tokenize" | "prefill" | "decode" | "complete";
+};
 
-const starterMessages: ChatMessage[] = [
+type FailedTurn = {
+  messageId: string;
+  reason: string;
+  text: string;
+};
+
+type GenerationState =
+  | { status: "idle" }
+  | { status: "running"; activity: RuntimeActivity; turn: Omit<FailedTurn, "reason"> };
+
+const STARTER_MESSAGES: ChatMessage[] = [
   {
-    id: 1,
+    id: "assistant-welcome",
     role: "assistant",
-    content: "Hi — I’m Sophon. Ask me something and I’ll run it through the local model in your browser.",
-    meta: "Ready locally",
-  },
+    content: "Hi — I’m Sophon. Your prompts run in this browser. Tiny GPT-2 is a verified completion baseline; choose an instruct model for conversational tasks.",
+    meta: "Local by design · no server inference"
+  }
 ];
 
 export function SophonWorkbench() {
-  const [messages, setMessages] = useState(starterMessages);
+  const [messages, setMessages] = useState(STARTER_MESSAGES);
   const [prompt, setPrompt] = useState("");
-  const [isRunning, setIsRunning] = useState(false);
+  const [generation, setGeneration] = useState<GenerationState>({ status: "idle" });
   const [error, setError] = useState<string | null>(null);
-  const [modelId, setModelId] = useState(DEFAULT_ONNX_MODEL.id);
+  const [failedTurn, setFailedTurn] = useState<FailedTurn | null>(null);
+  const [loadedModelId, setLoadedModelId] = useState<string | null>(null);
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [modelId, setModelId] = useState<string>(DEFAULT_ONNX_MODEL.id);
   const [capabilities, setCapabilities] = useState<RuntimeCapabilities | null>(null);
   const generationIdRef = useRef(0);
+  const warmupAbortRef = useRef<AbortController | null>(null);
+  const messageEndRef = useRef<HTMLDivElement>(null);
+  const promptRef = useRef<HTMLTextAreaElement>(null);
+  const isRunning = generation.status === "running";
+  const runtimeActivity = generation.status === "running" ? generation.activity : null;
   const selectedModel = MODEL_REGISTRY.find((model) => model.id === modelId) ?? DEFAULT_ONNX_MODEL;
-
-  const canSend = prompt.trim().length > 0 && !isRunning;
+  const modelCompatibility = getModelCompatibility(capabilities, selectedModel);
+  const runtimeStatus = getRuntimeStatus(capabilities, selectedModel, loadedModelId, runtimeActivity);
+  const canSend = prompt.trim().length > 0 && !isRunning && modelCompatibility === "compatible";
 
   useEffect(() => {
-    void getCapabilities().then(setCapabilities).catch(() => setCapabilities({ webgpu: false, wasm: true, crossOriginIsolated: false }));
+    let active = true;
+    void getCapabilities()
+      .then((nextCapabilities) => {
+        if (active) setCapabilities(nextCapabilities);
+      })
+      .catch(() => {
+        if (active) setCapabilities({ webgpu: false, wasm: false, crossOriginIsolated: false });
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const connection = navigator as Navigator & { connection?: { saveData?: boolean } };
+    if (!capabilities || !resolveModelProvider(DEFAULT_ONNX_MODEL, capabilities) || connection.connection?.saveData) return;
+    const controller = new AbortController();
+    warmupAbortRef.current = controller;
+    const warm = () => {
+      if (controller.signal.aborted || document.visibilityState !== "visible") return;
+      void runPrompt([{ role: "user", content: "Sophon" }], {
+        maxNewTokens: 1,
+        modelId: DEFAULT_ONNX_MODEL.id,
+        signal: controller.signal,
+        temperature: 0.05,
+        topK: 1
+      }).then((response) => {
+        if (response.ok && !controller.signal.aborted) setLoadedModelId(DEFAULT_ONNX_MODEL.id);
+      }).catch(() => undefined);
+    };
+    const idleId = window.requestIdleCallback?.(warm, { timeout: 4_000 });
+    const timeoutId = idleId === undefined ? window.setTimeout(warm, 1_500) : null;
+    return () => {
+      controller.abort();
+      if (idleId !== undefined) window.cancelIdleCallback?.(idleId);
+      if (timeoutId !== null) window.clearTimeout(timeoutId);
+      if (warmupAbortRef.current === controller) warmupAbortRef.current = null;
+    };
+  }, [capabilities]);
+
+  useEffect(() => {
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    messageEndRef.current?.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "end" });
+  }, [isRunning, messages]);
+
+  useEffect(() => () => {
+    generationIdRef.current += 1;
+    terminateRuntimeWorker();
   }, []);
 
   function resetChat() {
-    setMessages(starterMessages);
+    warmupAbortRef.current?.abort();
+    generationIdRef.current += 1;
+    if (isRunning) {
+      void cancelGeneration().catch(() => terminateRuntimeWorker());
+    }
+    setMessages(STARTER_MESSAGES);
     setPrompt("");
     setError(null);
+    setFailedTurn(null);
+    setGeneration({ status: "idle" });
+    window.requestAnimationFrame(() => promptRef.current?.focus());
   }
 
   function selectModel(nextModelId: string) {
-    if (nextModelId !== modelId) void unloadModel();
+    if (nextModelId === modelId) return;
+    const previousModelId = modelId;
+    warmupAbortRef.current?.abort();
     setModelId(nextModelId);
+    setLoadedModelId(null);
     setError(null);
+    setFailedTurn(null);
+    setGeneration({ status: "idle" });
+    void unloadModel(previousModelId).catch(() => {
+      setError("The previous model could not be released. You can continue with the selected model.");
+    });
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.nativeEvent.isComposing) return;
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       void submitPrompt();
     }
   }
 
-  async function submitPrompt(event?: FormEvent) {
+  async function submitPrompt(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
     const text = prompt.trim();
     if (!text || isRunning) return;
+    warmupAbortRef.current?.abort();
+
+    if (modelCompatibility !== "compatible") {
+      setError(modelCompatibility === "probing"
+        ? "Sophon is still checking this browser's local runtime."
+        : `${selectedModel.label} is not compatible with an available provider in this browser.`);
+      return;
+    }
 
     const generationId = generationIdRef.current += 1;
-    const userMessageId = Date.now();
+    const userMessageId = `user-${generationId}`;
+    const nextMessages = [...messages, { id: userMessageId, role: "user" as const, content: text }];
     setPrompt("");
     setError(null);
-    setIsRunning(true);
-    setMessages((current) => [...current, { id: userMessageId, role: "user", content: text }]);
+    setFailedTurn(null);
+    setMessages(nextMessages);
+    await runGeneration({ conversation: nextMessages, generationId, text, userMessageId });
+  }
+
+  async function runGeneration({ conversation, generationId, text, userMessageId }: {
+    conversation: ChatMessage[];
+    generationId: number;
+    text: string;
+    userMessageId: string;
+  }) {
+    setGeneration({
+      status: "running",
+      turn: { messageId: userMessageId, text },
+      activity: {
+        detail: loadedModelId === modelId ? "Preparing the conversation context" : `${selectedModel.label} · ${selectedModel.format.sizeLabel}`,
+        label: loadedModelId === modelId ? "Preparing context" : "Preparing local model",
+        phase: "runtime"
+      }
+    });
+
+    const turns = conversation
+      .filter((message) => message.id !== "assistant-welcome")
+      .map(({ content, role }) => ({ content, role }));
 
     try {
-      const response = await runPrompt(text, {
+      const response = await runPrompt(turns, {
         modelId,
         maxNewTokens: 48,
+        onLog: (event) => updateRuntimeFromLog(generationId, event),
+        onTelemetry: (telemetry) => updateRuntimeFromTelemetry(generationId, telemetry),
         temperature: 0.8
       });
       if (generationIdRef.current !== generationId) return;
       if (!response.ok) {
         setError(response.message);
+        setFailedTurn({ messageId: userMessageId, reason: response.message, text });
         return;
       }
 
-      setMessages((current) => current.map((message) => message.id === userMessageId ? {
-        ...message,
-        tokens: response.result.inputTokens
-      } : message));
-
-      setMessages((current) => [
-        ...current,
+      const metrics = response.result.metrics;
+      const conversationWithTokens = conversation.map((message) => message.id === userMessageId
+        ? { ...message, tokens: response.result.inputTokens }
+        : message);
+      setLoadedModelId(modelId);
+      if (!response.result.generatedText.trim()) {
+        const reason = "The model completed without returning visible text.";
+        setMessages(conversationWithTokens);
+        setError(reason);
+        setFailedTurn({ messageId: userMessageId, reason, text });
+        return;
+      }
+      setMessages([
+        ...conversationWithTokens,
         {
-          id: Date.now() + 1,
+          id: `assistant-${generationId}`,
           role: "assistant",
-          content: response.result.generatedText || "The model returned an empty response.",
+          content: response.result.generatedText,
           tokens: response.result.generatedTokens,
-          meta: `${response.result.metrics.provider} · ${response.result.metrics.contextTokenCount}${response.result.metrics.truncatedInputTokens ? `/${response.result.metrics.promptTokenCount}` : ""}→${response.result.outputTokenCount} tok · ${formatRate(response.result.metrics.decodeTokensPerSecond)} · ${formatDuration(response.result.metrics.ttftMs)} TTFT${response.result.metrics.truncatedInputTokens ? ` · ${response.result.metrics.truncatedInputTokens} earlier tok omitted` : ""}`,
-        },
+          meta: `${metrics.provider} · ${metrics.contextTokenCount}${metrics.truncatedInputTokens ? `/${metrics.promptTokenCount}` : ""}→${response.result.outputTokenCount} tok · ${formatRate(metrics.decodeTokensPerSecond)} · ${formatDuration(metrics.ttftMs)} TTFT${metrics.truncatedInputTokens ? ` · ${metrics.truncatedInputTokens} earlier tok omitted` : ""}`
+        }
       ]);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "The local model could not run.");
+      if (generationIdRef.current !== generationId) return;
+      const reason = caught instanceof Error ? caught.message : "The local model could not run.";
+      setError(reason);
+      setFailedTurn({ messageId: userMessageId, reason, text });
     } finally {
-      if (generationIdRef.current === generationId) setIsRunning(false);
+      if (generationIdRef.current === generationId) {
+        setGeneration({ status: "idle" });
+      }
+    }
+  }
+
+  function updateRuntimeFromLog(generationId: number, event: OnnxLogEvent) {
+    if (generationIdRef.current !== generationId) return;
+    setGeneration((current) => current.status === "running" ? { ...current, activity: activityFromLog(event) } : current);
+  }
+
+  function updateRuntimeFromTelemetry(generationId: number, telemetry: GenerationTelemetryEvent) {
+    if (generationIdRef.current !== generationId) return;
+    setGeneration((current) => current.status === "running" ? { ...current, activity: activityFromTelemetry(telemetry) } : current);
+  }
+
+  function stopGeneration() {
+    if (generation.status !== "running") return;
+    const pendingTurn = generation.turn;
+
+    generationIdRef.current += 1;
+    void cancelGeneration().catch(() => {
+      terminateRuntimeWorker();
+      setLoadedModelId(null);
+    });
+    setGeneration({ status: "idle" });
+    setError("Generation stopped. Your message is ready to retry or edit.");
+    setFailedTurn({ ...pendingTurn, reason: "Generation stopped." });
+  }
+
+  function retryFailedTurn() {
+    if (!failedTurn || isRunning || modelCompatibility !== "compatible") return;
+    const generationId = generationIdRef.current += 1;
+    setError(null);
+    setFailedTurn(null);
+    void runGeneration({ conversation: messages, generationId, text: failedTurn.text, userMessageId: failedTurn.messageId });
+  }
+
+  function editFailedTurn() {
+    if (!failedTurn || isRunning) return;
+    const failedIndex = messages.findIndex((message) => message.id === failedTurn.messageId);
+    setMessages(failedIndex >= 0 ? messages.slice(0, failedIndex) : messages);
+    setPrompt(failedTurn.text);
+    setError(null);
+    setFailedTurn(null);
+    window.requestAnimationFrame(() => promptRef.current?.focus());
+  }
+
+  function editMessage(message: ChatMessage, index: number) {
+    if (isRunning || message.role !== "user") return;
+    setMessages(messages.slice(0, index));
+    setPrompt(message.content);
+    setError(null);
+    setFailedTurn(null);
+    window.requestAnimationFrame(() => promptRef.current?.focus());
+  }
+
+  function regenerateLatest(assistantIndex: number) {
+    if (isRunning || modelCompatibility !== "compatible") return;
+    const userIndex = messages.slice(0, assistantIndex).findLastIndex((message) => message.role === "user");
+    const userMessage = messages[userIndex];
+    if (!userMessage) return;
+    const conversation = messages.slice(0, assistantIndex);
+    const generationId = generationIdRef.current += 1;
+    setMessages(conversation);
+    setError(null);
+    setFailedTurn(null);
+    void runGeneration({ conversation, generationId, text: userMessage.content, userMessageId: userMessage.id });
+  }
+
+  async function copyMessage(message: ChatMessage) {
+    try {
+      await navigator.clipboard.writeText(message.content);
+      setCopiedMessageId(message.id);
+      window.setTimeout(() => setCopiedMessageId((current) => current === message.id ? null : current), 1600);
+    } catch {
+      setError("The message could not be copied to the clipboard.");
     }
   }
 
   return (
-    <main className="relative h-svh w-full overflow-hidden bg-[#090a0d] text-[#f4f0e9]">
-      <div className="sophon-noise pointer-events-none absolute inset-0" />
-      <div className="sophon-grid pointer-events-none absolute inset-0 opacity-70" />
-      <div className="relative flex h-svh w-full flex-col bg-[#0b0c10]/80 backdrop-blur-sm">
-        <header className="flex h-[74px] items-center justify-between border-b border-white/[.08] bg-[#0b0c10]/90 px-4 sm:px-7">
-          <div className="flex items-center gap-3">
-            <Button aria-label="Open menu" className="text-white/60 hover:bg-white/[.06] hover:text-white sm:hidden" size="icon" variant="ghost"><PanelLeft className="size-4" /></Button>
-            <div className="relative grid size-9 place-items-center rounded-md border border-[#ff694b]/50 bg-[#ff4d2e] text-[#210b07] shadow-[0_0_30px_rgb(255_77_46/.16)]"><GreekGlyph className="text-lg font-semibold">Σ</GreekGlyph><span className="absolute -right-1 -top-1 size-2 rounded-full bg-[#ffc857] shadow-[0_0_12px_#ffc857]" /></div>
-            <div>
-              <div className="flex items-center gap-2"><h1 className="font-mono text-sm font-semibold tracking-[0.12em] text-white">SOPHON</h1><Badge className="border-[#ff694b]/30 bg-[#ff4d2e]/10 font-mono text-[9px] uppercase tracking-widest text-[#ff9d87]" variant="outline">Local AI</Badge></div>
-              <p className="hidden font-mono text-[10px] uppercase tracking-[0.18em] text-white/35 sm:block">Private inference console</p>
+    <main className="relative h-svh w-full overflow-hidden bg-sophon-canvas text-foreground" data-inference={isRunning ? "active" : "idle"}>
+      <div aria-hidden="true" className="sophon-noise pointer-events-none absolute inset-0" />
+      <div aria-hidden="true" className="sophon-grid pointer-events-none absolute inset-0 opacity-45" />
+      <div className="relative flex h-svh w-full flex-col bg-transparent">
+        <header className="sophon-glass-strong z-20 flex h-[calc(74px+env(safe-area-inset-top))] shrink-0 items-center justify-between border-x-0 border-t-0 px-4 pt-[env(safe-area-inset-top)] sm:px-7">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="relative grid size-10 shrink-0 place-items-center rounded-xl border border-sophon-signal-bright/60 bg-gradient-to-br from-sophon-signal-bright to-sophon-signal text-[#210b07] shadow-[0_0_34px_rgb(255_77_46/.24)]">
+              <GreekGlyph className="text-lg font-semibold">Σ</GreekGlyph>
+              <span aria-hidden="true" className="absolute -right-1 -top-1 size-2 rounded-full bg-sophon-warning shadow-[0_0_12px_var(--sophon-warning)]" />
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <h1 className="font-mono text-sm font-semibold tracking-[0.12em] text-white">SOPHON</h1>
+                <span className="hidden items-center rounded-md border border-sophon-signal-bright/35 bg-sophon-signal/15 px-2 py-0.5 font-mono text-[9px] font-medium uppercase tracking-widest text-[#ffb4a4] min-[360px]:inline-flex">Local AI</span>
+              </div>
+              <p className="hidden font-mono text-[10px] uppercase tracking-[0.18em] text-white/60 sm:block">Private inference console</p>
             </div>
           </div>
+
           <div className="flex items-center gap-3">
-            <div className="hidden items-center gap-2 font-mono text-[10px] uppercase tracking-widest text-[#7df0a8] sm:flex"><span className="size-1.5 rounded-full bg-[#7df0a8] shadow-[0_0_10px_#7df0a8]" />{capabilities ? capabilities.webgpu ? "WebGPU online" : capabilities.wasm ? "WASM fallback" : "No runtime" : "Probing runtime"}</div>
-            <SophonModelSelector disabled={isRunning} modelId={modelId} onSelect={selectModel} />
+            <div className={cn("sophon-glass-tile hidden items-center gap-2 rounded-full px-3 py-1.5 font-mono text-[10px] uppercase tracking-widest sm:flex", runtimeStatus.className)}>
+              <span aria-hidden="true" className={cn("size-1.5 rounded-full", runtimeStatus.dotClassName)} />
+              {runtimeStatus.label}
+            </div>
+            <Button aria-label="New session" className="hidden rounded-xl sm:inline-flex" disabled={isRunning} onClick={resetChat} size="sm" type="button" variant="sophon">
+              <Plus aria-hidden="true" /> New session
+            </Button>
+            <SophonModelSelector capabilities={capabilities} disabled={isRunning} modelId={modelId} onSelect={selectModel} />
           </div>
         </header>
 
-        <div className="grid min-h-0 flex-1 grid-cols-[250px_minmax(0,1fr)] max-[700px]:grid-cols-1">
-          <aside className="flex flex-col border-r border-white/[.08] bg-[#0a0b0e]/70 p-4 max-[700px]:hidden">
-            <Button className="h-11 w-full justify-start gap-2 border-white/[.12] bg-white/[.045] font-mono text-xs text-white hover:border-[#ff694b]/50 hover:bg-[#ff4d2e]/10" disabled={isRunning} onClick={resetChat} variant="outline"><Plus className="size-4 text-[#ff795d]" />New session <span className="ml-auto text-[10px] text-white/25">⌘ N</span></Button>
-            <div className="mt-9 flex items-center justify-between px-2 font-mono text-[10px] uppercase tracking-[0.2em] text-white/35"><span>Sessions</span><span className="text-white/20">01</span></div>
-            <div className="mt-3 rounded-md border border-[#ff694b]/25 bg-[#ff4d2e]/[.08] px-3 py-3 shadow-[inset_3px_0_0_#ff4d2e]">
-              <div className="flex items-center gap-2 text-xs font-medium text-white"><span className="size-1.5 rounded-full bg-[#ff694b]" />Getting started</div>
-              <p className="mt-1 pl-3.5 text-[11px] text-white/35">Active now</p>
-            </div>
-            <Card className="mt-auto hidden border-white/[.08] bg-white/[.025] p-3 text-xs leading-5 text-white/45 min-[701px]:block">
-              <div className="mb-3 flex items-center justify-between gap-2 font-mono text-[10px] uppercase tracking-widest text-white/60"><span className="flex items-center gap-2"><Activity className="size-3 text-[#7df0a8]" />Device runtime</span><span className={selectedModel.verification === "verified" ? "text-[#7df0a8]" : "text-[#ffc857]"}>{selectedModel.verification}</span></div>
-              <p className="font-medium text-white/80">{selectedModel.label}</p>
-              <p className="mt-1">{selectedModel.description}</p>
-              <div className="mt-3 grid grid-cols-2 gap-2 border-t border-white/[.08] pt-3 font-mono text-[10px] uppercase text-white/30"><span>Graph</span><span className="text-right text-white/50">{selectedModel.graph.generation}</span><span>Provider</span><span className="text-right text-[#7df0a8]">{capabilities?.webgpu && selectedModel.providers.includes("webgpu") ? "WebGPU" : selectedModel.providers.includes("wasm") ? "WASM" : "Unavailable"}</span></div>
-            </Card>
-          </aside>
+        <div aria-atomic="true" aria-live="polite" className="sr-only" role="status">{runtimeActivity?.label ?? ""}</div>
 
-          <section className="relative flex min-h-0 min-w-0 flex-col">
-            <ScrollArea className="min-h-0 flex-1">
-              <div className="mx-auto flex w-full max-w-6xl flex-col gap-8 px-4 py-4 sm:px-12 sm:py-7">
-                <div>
-                  <div className="mb-3 flex items-center justify-between border-b border-white/[.08] pb-3 font-mono text-[10px] uppercase tracking-[0.2em] text-white/35"><span>Transmission log</span><span className="text-[#7df0a8]">Channel open</span></div>
-                  <div className="flex items-center justify-between gap-5"><div><h2 className="font-mono text-xs font-medium uppercase tracking-[0.22em] text-white/70">Conversation buffer</h2><p className="mt-2 font-mono text-[10px] uppercase tracking-wider text-white/25">{selectedModel.family} / {selectedModel.label} / {selectedModel.verification}</p></div><div className="hidden size-12 items-center justify-center rounded-md border border-[#ff694b]/20 bg-[#ff4d2e]/[.04] text-[#ff795d] sm:flex"><MessageSquareText className="size-5" /></div></div>
-                </div>
-
-                <div className="mt-3 space-y-6">
-                  {messages.map((message) => (
-                    <Message align={message.role === "user" ? "end" : "start"} key={message.id}>
-                      <MessageAvatar className={message.role === "user" ? "rounded-md border border-[#ff694b]/40 bg-[#ff4d2e] text-[#210b07] shadow-[0_0_20px_rgb(255_77_46/.12)]" : "rounded-md border border-white/[.12] bg-white/[.06] text-[#ff795d]"}>
-                        {message.role === "user" ? <CircleUserRound className="size-4" /> : <GreekGlyph className="text-lg font-semibold">Σ</GreekGlyph>}
+        <div className="min-h-0 flex-1">
+          <section aria-busy={isRunning} aria-label="Conversation" className="relative flex h-full min-h-0 min-w-0 flex-col">
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+              <div className="mx-auto flex min-w-0 w-full max-w-6xl flex-col px-4 py-6 sm:px-12 sm:py-9">
+                <div aria-live={isRunning ? "off" : "polite"} aria-relevant="additions text" className="min-w-0 space-y-6" role="log">
+                  {messages.map((message, index) => (
+                    <Message align={message.role === "user" ? "end" : "start"} aria-label={message.role === "user" ? "Message from you" : "Message from Sophon"} key={message.id} role="article">
+                      <MessageAvatar className={message.role === "user" ? "!self-start mt-1 rounded-xl border border-sophon-signal-bright/50 bg-gradient-to-br from-sophon-signal-bright to-sophon-signal text-[#210b07] shadow-[0_0_20px_rgb(255_77_46/.16)]" : "sophon-glass-tile !self-start mt-1 rounded-xl text-sophon-signal-soft"}>
+                        {message.role === "user" ? <CircleUserRound aria-hidden="true" className="size-4" /> : <GreekGlyph className="text-lg font-semibold">Σ</GreekGlyph>}
                       </MessageAvatar>
-                      <MessageContent className="max-w-[min(920px,calc(100%-3rem))]"><InspectableMessage content={message.content} meta={message.meta} role={message.role} tokens={message.tokens} /></MessageContent>
+                      <MessageContent className="w-full max-w-[calc(100%_-_2.75rem)] sm:max-w-[min(920px,calc(100%_-_3rem))]">
+                        <InspectableMessage content={message.content} meta={message.meta} role={message.role} tokens={message.tokens} />
+                        <MessageActions
+                          canEdit={!isRunning && message.role === "user" && message.id !== "assistant-welcome"}
+                          canRegenerate={!isRunning && message.role === "assistant" && index === messages.length - 1 && index > 0}
+                          copied={copiedMessageId === message.id}
+                          onCopy={() => void copyMessage(message)}
+                          onEdit={() => editMessage(message, index)}
+                          onRegenerate={() => regenerateLatest(index)}
+                          role={message.role}
+                        />
+                      </MessageContent>
                     </Message>
                   ))}
-                  {isRunning ? <Message><MessageAvatar><GreekGlyph className="animate-pulse text-lg font-semibold">Σ</GreekGlyph></MessageAvatar><MessageContent><Bubble variant="muted"><BubbleContent><LoaderCircle className="size-4 animate-spin" /></BubbleContent></Bubble></MessageContent></Message> : null}
+                  {isRunning ? (
+                    <Message aria-label={`Sophon status: ${runtimeActivity?.label ?? "Generating response"}`} aria-live="off" role="article">
+                      <MessageAvatar className="sophon-glass-tile !self-start mt-1 rounded-xl text-sophon-signal-soft"><GreekGlyph className="animate-pulse text-lg font-semibold motion-reduce:animate-none">Σ</GreekGlyph></MessageAvatar>
+                      <MessageContent className="w-full max-w-[calc(100%_-_2.75rem)] sm:max-w-xl">
+                        <Bubble className="w-full max-w-full" variant="muted">
+                          <BubbleContent className="sophon-glass-tile flex w-full items-center gap-3 rounded-xl px-4 py-3">
+                            <LoaderCircle aria-hidden="true" className="size-4 shrink-0 animate-spin text-sophon-signal-soft motion-reduce:animate-none" />
+                            <span className="min-w-0 flex-1">
+                              <span className="block text-sm font-medium text-white/90">{runtimeActivity?.label ?? "Generating response"}</span>
+                              {runtimeActivity?.detail ? <span className="mt-0.5 block truncate text-xs text-white/60">{runtimeActivity.detail}</span> : null}
+                            </span>
+                            <Button aria-label="Stop generation" className="shrink-0" onClick={stopGeneration} size="sm" type="button" variant="sophon">
+                              <Square aria-hidden="true" className="size-3 fill-current" /> Stop
+                            </Button>
+                          </BubbleContent>
+                        </Bubble>
+                      </MessageContent>
+                    </Message>
+                  ) : null}
+                  <div aria-hidden="true" ref={messageEndRef} />
                 </div>
               </div>
-            </ScrollArea>
+            </div>
 
-            <div className="border-t border-white/[.08] bg-[#0b0c10]/90 p-4 backdrop-blur-xl sm:p-6">
+            <div className="sophon-glass-strong z-10 shrink-0 border-x-0 border-b-0 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:p-6 sm:pb-[max(1.5rem,env(safe-area-inset-bottom))]">
               <form className="mx-auto max-w-6xl" onSubmit={submitPrompt}>
-                {error ? <div className="mb-3 rounded-md border border-[#ff5f63]/30 bg-[#ff5f63]/10 px-3 py-2 text-sm text-[#ff9a9d]">{error}</div> : null}
-                <div className="relative rounded-md border border-white/[.14] bg-[#111319] shadow-[0_15px_60px_rgb(0_0_0/.28)] transition-colors focus-within:border-[#ff694b]/60 focus-within:shadow-[0_0_0_3px_rgb(255_77_46/.1),0_15px_60px_rgb(0_0_0/.28)]">
-                  <Textarea aria-label="Message Sophon" className="min-h-24 resize-none border-0 bg-transparent pr-14 text-[15px] leading-6 text-white shadow-none placeholder:text-white/25 focus-visible:ring-0" onChange={(event) => setPrompt(event.target.value)} onKeyDown={handleKeyDown} placeholder="Ask the local model anything..." value={prompt} />
-                  <div className="flex items-center justify-between border-t border-white/[.07] px-3 py-2"><span className="font-mono text-[10px] uppercase tracking-widest text-white/25">{selectedModel.family} · {selectedModel.format.quantization} · {selectedModel.format.sizeLabel}</span><Button aria-label="Send message" className="size-8 rounded-lg bg-[#ff4d2e] text-[#210b07] shadow-[0_0_20px_rgb(255_77_46/.2)] hover:bg-[#ff694b]" disabled={!canSend} size="icon" type="submit"><SendHorizontal className="size-4" /></Button></div>
+                {failedTurn ? (
+                  <div className="sophon-glass-tile mb-3 flex flex-col gap-3 rounded-xl border-destructive/35 px-4 py-3 text-sm text-[#ffb4b7] sm:flex-row sm:items-center" id="prompt-error" role="alert">
+                    <span className="min-w-0 flex-1">{failedTurn.reason}</span>
+                    <span className="flex shrink-0 gap-2">
+                      <Button disabled={modelCompatibility !== "compatible"} onClick={retryFailedTurn} size="sm" type="button" variant="sophon"><RotateCcw aria-hidden="true" /> Retry</Button>
+                      <Button onClick={editFailedTurn} size="sm" type="button" variant="sophon"><Pencil aria-hidden="true" /> Edit</Button>
+                    </span>
+                  </div>
+                ) : error ? <div className="sophon-glass-tile mb-3 rounded-xl border-destructive/35 px-4 py-3 text-sm text-[#ffb4b7]" id="prompt-error" role="alert">{error}</div> : null}
+                <label className="sr-only" htmlFor="sophon-prompt">Message Sophon</label>
+                <div className="sophon-glass-tile sophon-glass-interactive relative overflow-hidden rounded-2xl">
+                  <textarea
+                    aria-describedby="prompt-help"
+                    className="flex min-h-24 w-full resize-none rounded-md border-0 bg-transparent px-3 py-2 pr-14 text-[15px] leading-6 text-white shadow-none placeholder:text-white/50 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                    id="sophon-prompt"
+                    onChange={(event) => setPrompt(event.target.value)}
+                    onKeyDown={handleKeyDown}
+                    placeholder="Ask the local model anything..."
+                    ref={promptRef}
+                    value={prompt}
+                  />
+                  <div className="flex items-center justify-between border-t border-white/[.1] bg-black/10 px-3 py-2">
+                    <span className="truncate pr-3 font-mono text-[10px] uppercase tracking-widest text-white/60">{selectedModel.family} · {selectedModel.format.quantization} · {selectedModel.format.sizeLabel}</span>
+                    {isRunning ? (
+                      <Button aria-label="Stop generation" className="h-10 shrink-0 rounded-xl" onClick={stopGeneration} size="sm" type="button" variant="sophon">
+                        <Square aria-hidden="true" className="size-3 fill-current" /> Stop
+                      </Button>
+                    ) : (
+                      <Button aria-label="Send message" className="relative size-10 shrink-0 rounded-xl bg-gradient-to-br from-sophon-signal-bright to-sophon-signal text-[#210b07] shadow-[0_0_24px_rgb(255_77_46/.28)] after:absolute after:-inset-1 after:content-[''] hover:from-[#ff8068] hover:to-sophon-signal-bright" disabled={!canSend} size="icon" type="submit">
+                        <SendHorizontal aria-hidden="true" className="size-4" />
+                      </Button>
+                    )}
+                  </div>
                 </div>
-                <div className="mt-3 flex justify-between px-1 font-mono text-[10px] uppercase tracking-wider text-white/25"><span>Enter to send · long prompts use the latest model context window</span><span>{prompt.length} chars</span></div>
+                <div className="mt-3 flex justify-between gap-4 px-1 font-mono text-[10px] uppercase tracking-wider text-white/60" id="prompt-help">
+                  <span className={cn(modelCompatibility === "incompatible" && "text-destructive")}>
+                    {modelCompatibility === "probing" ? "Checking local runtime…" : modelCompatibility === "incompatible" ? "Selected model is unavailable in this browser" : <><span className="min-[360px]:hidden">Enter to send</span><span className="hidden min-[360px]:inline">Enter to send · Shift+Enter for a new line</span></>}
+                  </span>
+                  <span className="shrink-0 tabular-nums">{prompt.length} chars</span>
+                </div>
               </form>
             </div>
           </section>
@@ -190,6 +450,103 @@ export function SophonWorkbench() {
       </div>
     </main>
   );
+}
+
+function GreekGlyph({ children, className }: { children: string; className?: string }) {
+  return <span aria-hidden="true" className={cn("font-serif text-base leading-none", className)}>{children}</span>;
+}
+
+function MessageActions({ canEdit, canRegenerate, copied, onCopy, onEdit, onRegenerate, role }: {
+  canEdit: boolean;
+  canRegenerate: boolean;
+  copied: boolean;
+  onCopy: () => void;
+  onEdit: () => void;
+  onRegenerate: () => void;
+  role: ChatMessage["role"];
+}) {
+  return (
+    <div className={cn(
+      "flex items-center gap-1 transition-opacity sm:opacity-0 sm:group-focus-within/message:opacity-100 sm:group-hover/message:opacity-100",
+      role === "user" ? "self-end" : "self-start"
+    )}>
+      <Button aria-label={copied ? "Copied message" : "Copy message"} className="size-11 rounded-xl text-white/70 sm:size-9" onClick={onCopy} size="icon" type="button" variant="sophon">
+        {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
+      </Button>
+      {canEdit ? (
+        <Button aria-label="Edit message" className="size-11 rounded-xl text-white/70 sm:size-9" onClick={onEdit} size="icon" type="button" variant="sophon">
+          <Pencil aria-hidden="true" />
+        </Button>
+      ) : null}
+      {canRegenerate ? (
+        <Button aria-label="Regenerate response" className="size-11 rounded-xl text-white/70 sm:size-9" onClick={onRegenerate} size="icon" type="button" variant="sophon">
+          <RotateCcw aria-hidden="true" />
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+function getModelCompatibility(capabilities: RuntimeCapabilities | null, model: ModelManifest) {
+  if (!capabilities) return "probing" as const;
+  return resolveModelProvider(model, capabilities) ? "compatible" as const : "incompatible" as const;
+}
+
+function getRuntimeStatus(
+  capabilities: RuntimeCapabilities | null,
+  model: ModelManifest,
+  loadedModelId: string | null,
+  activity: RuntimeActivity | null
+) {
+  if (activity) {
+    return { label: activity.label, className: "text-[#dbe7ff]", dotClassName: "bg-sophon-signal-soft shadow-[0_0_10px_var(--sophon-signal-soft)]" };
+  }
+  if (!capabilities) {
+    return { label: "Checking runtime", className: "text-white/70", dotClassName: "animate-pulse bg-white/60 motion-reduce:animate-none" };
+  }
+  if (getModelCompatibility(capabilities, model) === "incompatible") {
+    return { label: "Model unavailable", className: "text-destructive", dotClassName: "bg-destructive" };
+  }
+  if (loadedModelId === model.id) {
+    return { label: "Model ready", className: "text-sophon-verified", dotClassName: "bg-sophon-verified shadow-[0_0_10px_var(--sophon-verified)]" };
+  }
+  return { label: "Available · not loaded", className: "text-white/70", dotClassName: "bg-sophon-warning shadow-[0_0_10px_var(--sophon-warning)]" };
+}
+
+function activityFromLog(event: OnnxLogEvent): RuntimeActivity {
+  const phase = event.phase === "download"
+    ? "download"
+    : event.phase === "tokenize"
+      ? "tokenize"
+      : event.phase === "inference" || event.phase === "generate"
+        ? "decode"
+        : "runtime";
+  const label = phase === "download"
+    ? "Downloading model"
+    : phase === "tokenize"
+      ? "Tokenizing context"
+      : phase === "decode"
+        ? "Running local inference"
+        : event.message || "Initializing runtime";
+  return { detail: event.detail, label, phase };
+}
+
+function activityFromTelemetry(telemetry: GenerationTelemetryEvent): RuntimeActivity {
+  if (telemetry.phase === "prefill") {
+    return { detail: `${telemetry.contextTokenCount} context tokens`, label: "Prefilling context", phase: "prefill" };
+  }
+  if (telemetry.phase === "decode") {
+    return {
+      detail: `${telemetry.outputTokenCount} generated · ${formatRate(telemetry.decodeTokensPerSecond)}`,
+      label: "Generating response",
+      phase: "decode"
+    };
+  }
+  return {
+    detail: `${telemetry.outputTokenCount} tokens generated`,
+    label: "Finalizing response",
+    phase: "complete"
+  };
 }
 
 function formatRate(value: number | null) {
