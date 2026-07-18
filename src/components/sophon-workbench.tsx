@@ -19,13 +19,12 @@ type ChatMessage = {
   meta?: string;
   tokens?: InspectableToken[];
 };
-
 type RuntimeActivity = {
   detail?: string;
   label: string;
   phase: "download" | "runtime" | "tokenize" | "prefill" | "decode" | "complete";
+  progress?: OnnxLogEvent["progress"];
 };
-
 type FailedTurn = {
   messageId: string;
   reason: string;
@@ -37,7 +36,6 @@ type GenerationState =
   | { status: "loading"; activity: RuntimeActivity }
   | { status: "running"; activity: RuntimeActivity; turn: Omit<FailedTurn, "reason"> };
 type BrowserStorage = StorageEstimate & { persistent: boolean };
-
 const STARTER_MESSAGES: ChatMessage[] = [
   {
     id: "assistant-welcome",
@@ -64,6 +62,9 @@ export function SophonWorkbench() {
   const isRunning = generation.status === "running";
   const isBusy = generation.status !== "idle";
   const runtimeActivity = generation.status === "idle" ? null : generation.activity;
+  const isModelLoading = generation.status === "loading" || runtimeActivity?.phase === "download";
+  const downloadProgress = isModelLoading ? runtimeActivity?.progress : undefined;
+  const downloadPercent = downloadProgress ? Math.floor(downloadProgress.loaded / downloadProgress.total * 100) : undefined;
   const selectedModel = MODEL_REGISTRY.find((model) => model.id === modelId) ?? DEFAULT_ONNX_MODEL;
   const modelCompatibility = getModelCompatibility(capabilities, selectedModel);
   const runtimeStatus = getRuntimeStatus(capabilities, selectedModel, loadedModelId, runtimeActivity);
@@ -327,7 +328,7 @@ export function SophonWorkbench() {
       <div aria-hidden="true" className="sophon-noise pointer-events-none absolute inset-0" />
       <div aria-hidden="true" className="sophon-grid pointer-events-none absolute inset-0 opacity-45" />
       <div className="relative flex h-svh w-full flex-col bg-transparent">
-        <header className="sophon-glass-strong z-20 flex h-[calc(74px+env(safe-area-inset-top))] shrink-0 items-center justify-between border-x-0 border-t-0 px-4 pt-[env(safe-area-inset-top)] sm:px-7">
+        <header className="sophon-glass-strong relative z-20 flex h-[calc(74px+env(safe-area-inset-top))] shrink-0 items-center justify-between border-x-0 border-t-0 px-4 pt-[env(safe-area-inset-top)] sm:px-7">
           <div className="flex min-w-0 items-center gap-3">
             <div className="relative grid size-10 shrink-0 place-items-center rounded-xl border border-sophon-signal-bright/60 bg-gradient-to-br from-sophon-signal-bright to-sophon-signal text-[#210b07] shadow-[0_0_34px_rgb(255_77_46/.24)]">
               <GreekGlyph className="text-lg font-semibold">Σ</GreekGlyph>
@@ -345,13 +346,14 @@ export function SophonWorkbench() {
           <div className="flex items-center gap-3">
             <div className={cn("sophon-glass-tile hidden items-center gap-2 rounded-full px-3 py-1.5 font-mono text-[10px] uppercase tracking-widest sm:flex", runtimeStatus.className)}>
               <span aria-hidden="true" className={cn("size-1.5 rounded-full", runtimeStatus.dotClassName)} />
-              {runtimeStatus.label}
+              {runtimeStatus.label}{downloadPercent === undefined ? null : ` · ${downloadPercent}%`}
             </div>
             <Button aria-label="New session" className="hidden rounded-xl sm:inline-flex" disabled={isBusy} onClick={resetChat} size="sm" type="button" variant="sophon">
               <Plus aria-hidden="true" /> New session
             </Button>
             <SophonModelSelector capabilities={capabilities} disabled={isRunning} loading={generation.status === "loading"} modelId={modelId} onSelect={selectModel} />
           </div>
+          {isModelLoading ? <span aria-label={`Loading ${selectedModel.label}`} aria-valuemax={100} aria-valuemin={0} aria-valuenow={downloadPercent} aria-valuetext={downloadProgress ? `${formatStorageBytes(downloadProgress.loaded)} of ${formatStorageBytes(downloadProgress.total)} loaded` : "Preparing model download"} className="absolute inset-x-0 bottom-0 h-1 overflow-hidden bg-white/10" role="progressbar"><span className={cn("block h-full bg-gradient-to-r from-sophon-signal to-sophon-signal-bright shadow-[0_0_12px_var(--sophon-signal-bright)] transition-[width] duration-200 motion-reduce:transition-none", downloadPercent === undefined && "w-1/3 animate-pulse motion-reduce:animate-none")} style={downloadPercent === undefined ? undefined : { width: `${downloadPercent}%` }} /></span> : null}
         </header>
 
         <div aria-atomic="true" aria-live="polite" className="sr-only" role="status">{runtimeActivity?.label ?? ""}</div>
@@ -534,7 +536,7 @@ function activityFromLog(event: OnnxLogEvent): RuntimeActivity {
       : phase === "decode"
         ? "Running local inference"
         : event.message || "Initializing runtime";
-  return { detail: event.detail, label, phase };
+  return { detail: event.progress ? `${formatStorageBytes(event.progress.loaded)} / ${formatStorageBytes(event.progress.total)}` : event.detail, label, phase, progress: event.progress };
 }
 
 function activityFromTelemetry(telemetry: GenerationTelemetryEvent): RuntimeActivity {

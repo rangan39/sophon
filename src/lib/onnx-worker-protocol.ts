@@ -113,6 +113,7 @@ function isLogEvent(value: unknown): value is OnnxLogEvent {
     && typeof value.message === "string"
     && (value.detail === undefined || typeof value.detail === "string")
     && (value.phase === undefined || value.phase === "download" || value.phase === "tokenize" || value.phase === "inference" || value.phase === "generate" || value.phase === "runtime")
+    && (value.progress === undefined || (isRecord(value.progress) && typeof value.progress.loaded === "number" && Number.isFinite(value.progress.loaded) && value.progress.loaded >= 0 && typeof value.progress.total === "number" && Number.isFinite(value.progress.total) && value.progress.total > 0 && value.progress.loaded <= value.progress.total))
     && (value.durationMs === undefined || isFiniteNonNegative(value.durationMs));
 }
 

@@ -60,7 +60,10 @@ test("preloads and reuses the pinned Tiny Aya WebGPU pipeline without generating
   await preloadOnnxModel("tiny-aya-global", (event) => logs.push(event));
 
   assert.equal(pipelineCalls.length, 1);
-  assert.deepEqual(pipelineCalls[0], [
+  const [task, source, options] = pipelineCalls[0];
+  const { progress_callback: progressCallback, ...pipelineOptions } = options;
+  assert.equal(typeof progressCallback, "function");
+  assert.deepEqual([task, source, pipelineOptions], [
     "text-generation",
     "onnx-community/tiny-aya-global-ONNX",
     { device: "webgpu", dtype: "q4f16", revision: "7fff1be9627e40f0d89c33f406882bdafb56ec90" }
@@ -70,5 +73,6 @@ test("preloads and reuses the pinned Tiny Aya WebGPU pipeline without generating
   assert.equal(env.allowLocalModels, false);
   assert.equal(env.allowRemoteModels, true);
   assert.equal(logs[0]?.phase, "download");
+  assert.deepEqual(logs.filter((event) => event.progress).map((event) => event.progress), [{ loaded: 25, total: 100 }, { loaded: 100, total: 100 }]);
   assert.match(logs.at(-1)?.message ?? "", /cached model pipeline/i);
 });
