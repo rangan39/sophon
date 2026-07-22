@@ -48,9 +48,18 @@ npm run check
 
 WebGPU works best in a recent Chromium-based browser. Opening Sophon does not download model weights; the first explicit model selection downloads and caches about 2.35 GB.
 
-Probe the pinned model CDN with the same bounded concurrency used by the app:
+Probe the pinned model CDN across repeated concurrency trials (defaults: three trials, 64 MiB per trial, concurrency 1/2/4):
 
 ```bash
+npm run benchmark:download
+```
+
+Override the matrix when comparing a particular connection:
+
+```bash
+SOPHON_BENCHMARK_TRIALS=5 \
+SOPHON_BENCHMARK_BYTES=134217728 \
+SOPHON_BENCHMARK_CONCURRENCY=2,4,6,8,12 \
 npm run benchmark:download
 ```
 
@@ -86,9 +95,13 @@ Tiny Aya is an open-weights research release governed by CC BY-NC 4.0 and the Co
 
 ## Model delivery and caching
 
-Selecting a model starts a pinned Hugging Face download inside the browser worker. When supported, Sophon downloads 64 MiB ranges through one four-request queue, writes them directly into the Origin Private File System, checkpoints completed ranges in IndexedDB, and verifies each complete weight file against its pinned SHA-256 digest. A reload or model switch can therefore reuse durable ranges instead of restarting a multi-gigabyte file.
+Selecting a model starts a pinned Hugging Face download inside the browser worker. When supported, Sophon downloads 64 MiB ranges through a bounded adaptive queue that starts at four requests, probes up to twelve only when measured goodput improves, and backs off on transient failures. Every range is streamed directly into the Origin Private File System and simultaneously checked against a pinned segment SHA-256 digest. A corrupt response retries only its range, and a fresh download does not need a final OPFS reread. Resumed downloads retain the complete ordered SHA-256 path as a compatibility fallback and overlap it with remaining network work.
 
-Verified OPFS `File` objects are handed to Transformers.js as ONNX external data, so weights are not duplicated in CacheStorage. Configuration and tokenizer files continue to use the normal Transformers.js browser cache. If OPFS, synchronous worker access, strong validators, or HTTP ranges are unavailable, Sophon falls back to the standard Transformers.js download path. Model selection also makes a best-effort persistent-storage request; the browser retains final control over quota and eviction.
+Completed ranges become resumable in batches of four or after one second, whichever comes first. Every checkpoint flushes OPFS before its strict IndexedDB commit, so a crash can cause bounded redundant downloading but cannot authorize bytes that were not durably written. A reload or model switch can therefore reuse durable ranges instead of restarting a multi-gigabyte file. Set `NEXT_PUBLIC_SOPHON_ADAPTIVE_DOWNLOADS=0` before building to retain the fixed four-request fallback.
+
+Verified OPFS `File` objects are handed to Transformers.js as ONNX external data, so weights are not duplicated in CacheStorage. The graph, configuration, generation settings, and tokenizer files are also pinned by exact size and SHA-256, verified by Sophon, and then stored under Transformers.js-compatible CacheStorage keys. A cached artifact is rehashed once per browser-worker session before runtime use.
+
+Delivery fails closed when OPFS, synchronous worker access, CacheStorage, strong validators, or HTTP ranges are unavailable; there is no unverified multi-gigabyte fallback. Sophon checks the browser's available storage before starting and surfaces quota failures explicitly. Model selection also makes a best-effort persistent-storage request, while the browser retains final control over quota and eviction.
 
 Switching models terminates the active worker and releases its runtime resources while verified files remain under browser-managed site storage. The UI reports approximate usage and quota through the Storage API and distinguishes downloading, resuming, verification, and cached initialization.
 

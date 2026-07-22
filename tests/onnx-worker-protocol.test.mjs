@@ -64,6 +64,21 @@ test("accepts explicit model preloads and validates completion", () => {
   assert.equal(isWorkerResult("preload", { ok: true }), true);
 });
 
+test("validates model cache inventory and deletion operations", () => {
+  assert.equal(isWorkerRequest({ type: "cache-status", requestId: "status-1" }), true);
+  assert.equal(isWorkerResult("cache-status", { models: [{
+    modelId: "tiny-aya-global",
+    state: "partial",
+    resumableBytes: 64,
+    verifiedBytes: 0,
+    totalBytes: 100
+  }] }), true);
+  assert.equal(isWorkerResult("cache-status", { models: [{ modelId: "bad", state: "partial", resumableBytes: 101, verifiedBytes: 0, totalBytes: 100 }] }), false);
+  assert.equal(isWorkerRequest({ type: "delete-cache", requestId: "delete-1", modelId: "tiny-aya-global" }), true);
+  assert.equal(isWorkerRequest({ type: "delete-cache", requestId: "delete-2", modelId: "" }), false);
+  assert.equal(isWorkerResult("delete-cache", { modelId: "tiny-aya-global", deleted: true }), true);
+});
+
 test("validates worker events before dispatching them", () => {
   assert.equal(isWorkerResponse({
     type: "telemetry",

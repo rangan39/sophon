@@ -1,9 +1,15 @@
-import { getRuntimeCapabilities, preloadOnnxModel, runOnnxTextModel } from "@/lib/onnx-runner";
+import {
+  deleteOnnxModelCache,
+  getOnnxModelCacheStatus,
+  getRuntimeCapabilities,
+  preloadOnnxModel,
+  runOnnxTextModel
+} from "@/lib/onnx-runner";
 import type { GenerationTelemetryEvent, OnnxLogEvent } from "@/lib/onnx-types";
 import { isWorkerRequest, type WorkerRequest } from "@/lib/onnx-worker-protocol";
 
 let taskQueue = Promise.resolve();
-const generationControllers = new Map<string, AbortController>();
+const requestControllers = new Map<string, AbortController>();
 
 function postLog(requestId: string, event: OnnxLogEvent) {
   self.postMessage({ type: "log", requestId, event });
@@ -41,15 +47,15 @@ self.onmessage = (message: MessageEvent<unknown>) => {
   }
 
   if (request.type === "cancel") {
-    const controller = generationControllers.get(request.targetRequestId);
+    const controller = requestControllers.get(request.targetRequestId);
     const cancelled = Boolean(controller && !controller.signal.aborted);
     controller?.abort();
     complete(request.requestId, { cancelled, targetRequestId: request.targetRequestId });
     return;
   }
 
-  if (request.type === "generate") {
-    generationControllers.set(request.requestId, new AbortController());
+  if (request.type === "generate" || request.type === "preload" || request.type === "delete-cache") {
+    requestControllers.set(request.requestId, new AbortController());
   }
 
   taskQueue = taskQueue.then(() => runQueuedRequest(request));
@@ -58,7 +64,7 @@ self.onmessage = (message: MessageEvent<unknown>) => {
 async function runQueuedRequest(request: Exclude<WorkerRequest, { type: "capabilities" | "cancel" }>) {
   try {
     if (request.type === "generate") {
-      const controller = generationControllers.get(request.requestId);
+      const controller = requestControllers.get(request.requestId);
       complete(request.requestId, await runOnnxTextModel(request.messages, {
         modelId: request.modelId,
         ...request.options,
@@ -68,12 +74,27 @@ async function runQueuedRequest(request: Exclude<WorkerRequest, { type: "capabil
       }));
       return;
     }
-    await preloadOnnxModel(request.modelId, (event) => postLog(request.requestId, event));
-    complete(request.requestId, { ok: true });
+    if (request.type === "preload") {
+      await preloadOnnxModel(
+        request.modelId,
+        (event) => postLog(request.requestId, event),
+        requestControllers.get(request.requestId)?.signal
+      );
+      complete(request.requestId, { ok: true });
+      return;
+    }
+    if (request.type === "cache-status") {
+      complete(request.requestId, await getOnnxModelCacheStatus());
+      return;
+    }
+    complete(request.requestId, await deleteOnnxModelCache(
+      request.modelId,
+      requestControllers.get(request.requestId)?.signal
+    ));
   } catch (error) {
     fail(request.requestId, error);
   } finally {
-    if (request.type === "generate") generationControllers.delete(request.requestId);
+    requestControllers.delete(request.requestId);
   }
 }
 

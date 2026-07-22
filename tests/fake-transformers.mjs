@@ -1,4 +1,4 @@
-export const env = { remotePathTemplate: "{model}/resolve/{revision}/" };
+export const env = { allowLocalModels: false, allowRemoteModels: true, remotePathTemplate: "{model}/resolve/{revision}/" };
 export const pipelineCalls = [];
 export const pipelineRemotePathTemplates = [];
 

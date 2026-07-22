@@ -2,6 +2,8 @@ import type {
   ChatTurn,
   GenerationCancelResult,
   GenerationTelemetryEvent,
+  ModelCacheDeleteResult,
+  ModelCacheSummary,
   OnnxLogEvent,
   OnnxRunOptions,
   OnnxRunResponse,
@@ -33,11 +35,14 @@ const WORKER_TIMEOUTS: Record<WorkerRequestType, { idleMs: number; overallMs: nu
   capabilities: { idleMs: 10_000, overallMs: 10_000 },
   generate: { idleMs: 30 * 60_000, overallMs: 60 * 60_000 },
   cancel: { idleMs: 10_000, overallMs: 10_000 },
-  preload: { idleMs: 2 * 60_000, overallMs: 6 * 60 * 60_000 }
+  preload: { idleMs: 2 * 60_000, overallMs: 6 * 60 * 60_000 },
+  "cache-status": { idleMs: 30_000, overallMs: 30_000 },
+  "delete-cache": { idleMs: 2 * 60_000, overallMs: 10 * 60_000 }
 };
 
 let runtimeWorker: Worker | null = null;
 let activeGenerationRequestId: string | null = null;
+let activePreloadRequestId: string | null = null;
 let requestCounter = 0;
 const pendingRequests = new Map<string, PendingRequest>();
 
@@ -77,7 +82,27 @@ export async function cancelGeneration(targetRequestId = activeGenerationRequest
 }
 
 export async function preloadModel(modelId: string, onLog?: (event: OnnxLogEvent) => void) {
-  await dispatchWorkerRequest({ type: "preload", modelId }, onLog).promise;
+  const request = dispatchWorkerRequest({ type: "preload", modelId }, onLog);
+  activePreloadRequestId = request.requestId;
+  try {
+    await request.promise;
+  } finally {
+    if (activePreloadRequestId === request.requestId) activePreloadRequestId = null;
+  }
+}
+
+export async function cancelModelPreload(targetRequestId = activePreloadRequestId): Promise<GenerationCancelResult> {
+  if (!targetRequestId) return { cancelled: false, targetRequestId: null };
+  return dispatchWorkerRequest({ type: "cancel", targetRequestId }).promise;
+}
+
+export async function getCachedModels(): Promise<ModelCacheSummary[]> {
+  const result = await dispatchWorkerRequest({ type: "cache-status" }).promise;
+  return result.models;
+}
+
+export function deleteCachedModel(modelId: string): Promise<ModelCacheDeleteResult> {
+  return dispatchWorkerRequest({ type: "delete-cache", modelId }).promise;
 }
 
 export function terminateRuntimeWorker() {
@@ -185,6 +210,7 @@ function resetRuntimeWorker(error: Error) {
   const worker = runtimeWorker;
   runtimeWorker = null;
   activeGenerationRequestId = null;
+  activePreloadRequestId = null;
   worker?.terminate();
   for (const request of pendingRequests.values()) {
     window.clearTimeout(request.idleTimeoutId);

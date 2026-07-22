@@ -1,6 +1,7 @@
 import { openDB, type DBSchema, type IDBPDatabase } from "idb";
 import type { ModelDeliveryArtifact, ModelDeliveryManifest } from "@/lib/model-delivery/manifest";
 import type { ArtifactDownloadState, ArtifactStateStore, PositionedFile } from "@/lib/model-delivery/range-downloader";
+import { ModelDeliveryUnavailableError, toModelStorageError } from "@/lib/model-delivery/errors";
 
 interface DeliveryDatabase extends DBSchema {
   artifacts: { key: string; value: ArtifactDownloadState };
@@ -9,6 +10,7 @@ interface DeliveryDatabase extends DBSchema {
 type SyncAccessHandle = {
   getSize: () => number;
   truncate: (size: number) => void;
+  read: (data: Uint8Array, options: { at: number }) => number;
   write: (data: Uint8Array, options: { at: number }) => number;
   flush: () => void;
   close: () => void;
@@ -25,19 +27,51 @@ export type OpenArtifactFile = {
 
 let databasePromise: Promise<IDBPDatabase<DeliveryDatabase>> | null = null;
 
-export class ModelDeliveryUnavailableError extends Error {
-  constructor(message: string, options?: ErrorOptions) {
-    super(message, options);
-    this.name = "ModelDeliveryUnavailableError";
-  }
-}
-
 export function supportsPersistentModelDelivery() {
   return typeof navigator !== "undefined"
     && typeof navigator.storage?.getDirectory === "function"
     && typeof indexedDB !== "undefined"
     && typeof File !== "undefined"
     && typeof ReadableStream !== "undefined";
+}
+
+export async function getAllArtifactStates() {
+  return (await getDatabase()).getAll("artifacts");
+}
+
+export async function getArtifactFileSize(model: ModelDeliveryManifest, artifact: ModelDeliveryArtifact) {
+  if (!supportsPersistentModelDelivery()) return 0;
+  try {
+    const root = await navigator.storage.getDirectory();
+    const app = await root.getDirectoryHandle("sophon-models");
+    const version = await app.getDirectoryHandle("v1");
+    const modelDirectory = await version.getDirectoryHandle(model.modelId);
+    const revisionDirectory = await modelDirectory.getDirectoryHandle(model.revision);
+    const handle = await revisionDirectory.getFileHandle(artifact.externalPath);
+    return (await handle.getFile()).size;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "NotFoundError") return 0;
+    throw error;
+  }
+}
+
+export async function deleteModelStorage(model: ModelDeliveryManifest) {
+  if (supportsPersistentModelDelivery()) {
+    try {
+      const root = await navigator.storage.getDirectory();
+      const app = await root.getDirectoryHandle("sophon-models");
+      const version = await app.getDirectoryHandle("v1");
+      await version.removeEntry(model.modelId, { recursive: true });
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "NotFoundError")) throw toModelStorageError(error);
+    }
+  }
+  const database = await getDatabase();
+  const transaction = database.transaction("artifacts", "readwrite", { durability: "strict" });
+  for (const key of await transaction.store.getAllKeys()) {
+    if (key.startsWith(`${model.modelId}:`)) await transaction.store.delete(key);
+  }
+  await transaction.done;
 }
 
 export function createArtifactStateStore(): ArtifactStateStore {
@@ -71,11 +105,16 @@ export async function openArtifactFile(model: ModelDeliveryManifest, artifact: M
       throw new ModelDeliveryUnavailableError("Synchronous OPFS access is unavailable in this worker.");
     }
     const access = await handle.createSyncAccessHandle();
+    if (typeof access.read !== "function") {
+      access.close();
+      throw new ModelDeliveryUnavailableError("Positioned OPFS reads are unavailable in this worker.");
+    }
     let closed = false;
     return {
       file: {
         getSize: () => access.getSize(),
         truncate: (size) => access.truncate(size),
+        read: (data, offset) => access.read(data, { at: offset }),
         write: (data, offset) => access.write(data, { at: offset }),
         flush: () => access.flush(),
         getFile: () => handle.getFile()
@@ -88,6 +127,8 @@ export async function openArtifactFile(model: ModelDeliveryManifest, artifact: M
     };
   } catch (error) {
     if (error instanceof ModelDeliveryUnavailableError) throw error;
+    const storageError = toModelStorageError(error);
+    if (storageError !== error) throw storageError;
     throw new ModelDeliveryUnavailableError("Persistent model storage could not be opened.", { cause: error });
   }
 }

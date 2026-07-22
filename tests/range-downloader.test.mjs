@@ -1,18 +1,23 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { register } from "node:module";
 import test from "node:test";
-import {
+
+register("./alias-loader.mjs", import.meta.url);
+
+const {
   downloadRangeArtifact,
   RangeContractError,
   RangeDeliveryUnavailableError
-} from "../src/lib/model-delivery/range-downloader.ts";
+} = await import("../src/lib/model-delivery/range-downloader.ts");
 
-test("streams positioned ranges with global concurrency four and flushes before every checkpoint", async () => {
+test("streams four ranges at a time while overlapping verification and batching checkpoints", async () => {
   const bytes = Uint8Array.from({ length: 53 }, (_, index) => index * 7 % 251);
   const events = [];
+  const diagnostics = [];
   const file = new MemoryPositionedFile(events);
   const stateStore = new MemoryStateStore(events);
-  const server = createRangeServer(bytes, { delayForStart: (start) => 18 - start % 17 });
+  const server = createRangeServer(bytes, { delayForStart: (start) => start < 16 ? 1 : 30 });
 
   const result = await downloadRangeArtifact({
     artifact: artifact(bytes),
@@ -20,16 +25,66 @@ test("streams positioned ranges with global concurrency four and flushes before 
     stateStore,
     fetch: server.fetch,
     segmentSize: 8,
-    retries: 0
+    retries: 0,
+    onDiagnostic: (diagnostic) => diagnostics.push(diagnostic)
   });
 
   assert.deepEqual(new Uint8Array(await result.arrayBuffer()), bytes);
   assert.equal(server.maxActive, 4);
   assert.equal(stateStore.value?.status, "ready");
   assert.deepEqual(stateStore.value?.completed, [0, 1, 2, 3, 4, 5, 6]);
+  const checkpoints = diagnostics.filter((diagnostic) => diagnostic.type === "checkpoint");
+  assert.equal(checkpoints.length, 2);
+  assert.equal(checkpoints.reduce((total, diagnostic) => total + diagnostic.segments, 0), 7);
+  assert.ok(events.indexOf("read") < events.lastIndexOf("write"));
+  assert.deepEqual(diagnostics.find((diagnostic) => diagnostic.type === "verify")?.overlapped, true);
   for (let index = 0; index < events.length; index += 1) {
     if (events[index] === "put") assert.equal(events.slice(0, index).findLast((event) => event === "flush" || event === "put"), "flush");
   }
+});
+
+test("uses the configured segment threshold for durable checkpoint batches", async () => {
+  const bytes = Uint8Array.from({ length: 40 }, (_, index) => index + 1);
+  const diagnostics = [];
+
+  await downloadRangeArtifact({
+    artifact: artifact(bytes, "checkpoint-batches"),
+    file: new MemoryPositionedFile([]),
+    stateStore: new MemoryStateStore([]),
+    fetch: createRangeServer(bytes).fetch,
+    segmentSize: 4,
+    checkpointSegments: 3,
+    checkpointIntervalMs: 60_000,
+    retries: 0,
+    onDiagnostic: (diagnostic) => diagnostics.push(diagnostic)
+  });
+
+  const batchSizes = diagnostics
+    .filter((diagnostic) => diagnostic.type === "checkpoint")
+    .map((diagnostic) => diagnostic.segments)
+    .sort((left, right) => left - right);
+  assert.deepEqual(batchSizes, [1, 3, 3, 3]);
+});
+
+test("verifies pinned segment digests inline and retries only a corrupt range", async () => {
+  const bytes = Uint8Array.from({ length: 16 }, (_, index) => 70 + index);
+  const events = [];
+  const file = new MemoryPositionedFile(events);
+  const server = createRangeServer(bytes, { corruptRangeOnce: "bytes=4-7" });
+
+  const result = await downloadRangeArtifact({
+    artifact: artifactWithSegments(bytes, 4, "inline-segments"),
+    file,
+    stateStore: new MemoryStateStore(events),
+    fetch: server.fetch,
+    segmentSize: 4,
+    retries: 1
+  });
+
+  assert.deepEqual(new Uint8Array(await result.arrayBuffer()), bytes);
+  assert.equal(server.ranges.filter((range) => range === "bytes=4-7").length, 2);
+  assert.equal(server.ranges.filter((range) => range === "bytes=0-3").length, 1);
+  assert.equal(events.includes("read"), false, "Fresh downloads with segment digests must not reread OPFS for verification.");
 });
 
 test("resumes durable segments without requesting them again", async () => {
@@ -128,7 +183,7 @@ test("retries transient range failures but rejects a malformed Content-Range", a
   assert.equal(malformed.ranges.filter((range) => range === "bytes=0-5").length, 1);
 });
 
-test("falls back only when range delivery is unavailable", async () => {
+test("fails closed and removes partial bytes when range delivery is unavailable", async () => {
   const bytes = Uint8Array.from([1, 2, 3]);
   const file = new MemoryPositionedFile([], bytes);
   const stateStore = new MemoryStateStore([]);
@@ -142,6 +197,95 @@ test("falls back only when range delivery is unavailable", async () => {
   }), RangeDeliveryUnavailableError);
   assert.equal(file.bytes.length, 0);
   assert.equal(stateStore.value, undefined);
+});
+
+test("rehashes a ready file before reuse and repairs same-length corruption", async () => {
+  const expected = Uint8Array.from([3, 1, 4, 1, 5, 9, 2, 6]);
+  const corrupt = expected.map((value) => value ^ 0xff);
+  const cachedArtifact = artifact(expected, "cached-corrupt");
+  const file = new MemoryPositionedFile([], corrupt);
+  const stateStore = new MemoryStateStore([], {
+    key: cachedArtifact.key,
+    version: 1,
+    size: expected.length,
+    sha256: cachedArtifact.sha256,
+    segmentSize: 4,
+    etag: '"fixture-etag"',
+    completed: [0, 1],
+    status: "ready"
+  });
+  const server = createRangeServer(expected);
+
+  await downloadRangeArtifact({
+    artifact: cachedArtifact,
+    file,
+    stateStore,
+    fetch: server.fetch,
+    segmentSize: 4,
+    retries: 0
+  });
+
+  assert.deepEqual(file.bytes, expected);
+  assert.ok(server.ranges.includes("bytes=0-3"));
+  assert.equal(stateStore.value?.status, "ready");
+});
+
+test("cancellation keeps previously checkpointed segments resumable", async () => {
+  const bytes = Uint8Array.from({ length: 12 }, (_, index) => index + 1);
+  const file = new MemoryPositionedFile([], bytes.slice(0, 4));
+  const stateStore = new MemoryStateStore([], {
+    key: "cancelled-partial",
+    version: 1,
+    size: bytes.length,
+    sha256: digest(bytes),
+    segmentSize: 4,
+    etag: '"fixture-etag"',
+    completed: [0],
+    status: "partial"
+  });
+  const controller = new AbortController();
+  controller.abort();
+
+  await assert.rejects(() => downloadRangeArtifact({
+    artifact: artifact(bytes, "cancelled-partial"),
+    file,
+    stateStore,
+    fetch: createRangeServer(bytes).fetch,
+    segmentSize: 4,
+    retries: 0,
+    signal: controller.signal
+  }), { name: "AbortError" });
+
+  assert.deepEqual(file.bytes, bytes.slice(0, 4));
+  assert.deepEqual(stateStore.value?.completed, [0]);
+});
+
+test("graceful cancellation flushes newly completed segments before returning", async () => {
+  const bytes = Uint8Array.from({ length: 12 }, (_, index) => index + 1);
+  const controller = new AbortController();
+  const file = new MemoryPositionedFile([]);
+  const stateStore = new MemoryStateStore([]);
+  const server = createRangeServer(bytes, {
+    onRange(range) {
+      if (range === "bytes=4-7") controller.abort();
+    }
+  });
+
+  await assert.rejects(() => downloadRangeArtifact({
+    artifact: artifact(bytes, "cancel-after-complete"),
+    file,
+    stateStore,
+    fetch: server.fetch,
+    queue: new SequentialQueue(),
+    segmentSize: 4,
+    checkpointSegments: 4,
+    checkpointIntervalMs: 60_000,
+    retries: 0,
+    signal: controller.signal
+  }), { name: "AbortError" });
+
+  assert.deepEqual(stateStore.value?.completed, [0]);
+  assert.deepEqual(file.bytes.subarray(0, 4), bytes.subarray(0, 4));
 });
 
 test("deletes a file that fails final SHA-256 verification twice", async () => {
@@ -164,8 +308,18 @@ test("deletes a file that fails final SHA-256 verification twice", async () => {
   assert.equal(server.ranges.filter((range) => range === "bytes=0-3").length, 2);
 });
 
-function artifact(bytes) {
-  return { key: "fixture", url: "https://example.test/model.bin", size: bytes.length, sha256: digest(bytes) };
+function artifact(bytes, key = "fixture") {
+  return { key, url: "https://example.test/model.bin", size: bytes.length, sha256: digest(bytes) };
+}
+
+function artifactWithSegments(bytes, segmentSize, key) {
+  return {
+    ...artifact(bytes, key),
+    segmentSha256: Array.from({ length: Math.ceil(bytes.length / segmentSize) }, (_, index) => {
+      const start = index * segmentSize;
+      return digest(bytes.subarray(start, Math.min(bytes.length, start + segmentSize)));
+    })
+  };
 }
 
 function digest(bytes) {
@@ -183,6 +337,12 @@ class MemoryPositionedFile {
     next.set(this.bytes.subarray(0, size));
     this.bytes = next;
     this.events.push("truncate");
+  }
+  read(data, offset) {
+    const count = Math.min(data.length, Math.max(0, this.bytes.length - offset));
+    data.set(this.bytes.subarray(offset, offset + count));
+    this.events.push("read");
+    return count;
   }
   write(data, offset) {
     if (offset + data.length > this.bytes.length) this.truncate(offset + data.length);
@@ -210,17 +370,33 @@ class MemoryStateStore {
   }
 }
 
+class SequentialQueue {
+  tail = Promise.resolve();
+
+  add(task) {
+    const result = this.tail.then(task);
+    this.tail = result.then(
+      () => new Promise((resolve) => setTimeout(resolve, 0)),
+      () => undefined
+    );
+    return result;
+  }
+}
+
 function createRangeServer(bytes, options = {}) {
   const etag = options.etag ?? '"fixture-etag"';
   const ranges = [];
   let active = 0;
   let maxActive = 0;
   let failed = false;
+  let corrupted = false;
   const fetch = async (_url, init = {}) => {
     const headers = new Headers(init.headers);
     const range = headers.get("range");
     assert.ok(range);
     ranges.push(range);
+    options.onRange?.(range);
+    if (init.signal?.aborted) throw init.signal.reason ?? new DOMException("Aborted", "AbortError");
     const match = range.match(/^bytes=(\d+)-(\d+)$/);
     assert.ok(match);
     const start = Number(match[1]);
@@ -231,6 +407,10 @@ function createRangeServer(bytes, options = {}) {
       return new Response("busy", { status: 503 });
     }
     const body = bytes.slice(start, end + 1);
+    if (!corrupted && options.corruptRangeOnce === range) {
+      corrupted = true;
+      body[0] ^= 0xff;
+    }
     let offset = 0;
     let finished = false;
     active += 1;

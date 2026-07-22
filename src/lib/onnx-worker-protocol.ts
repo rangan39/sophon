@@ -2,6 +2,8 @@ import type {
   ChatTurn,
   GenerationCancelResult,
   GenerationTelemetryEvent,
+  ModelCacheDeleteResult,
+  ModelCacheSummary,
   OnnxLogEvent,
   OnnxRunOptions,
   OnnxRunResponse,
@@ -18,6 +20,8 @@ type WorkerRequestInputMap = {
   };
   cancel: { type: "cancel"; targetRequestId: string };
   preload: { type: "preload"; modelId: string };
+  "cache-status": { type: "cache-status" };
+  "delete-cache": { type: "delete-cache"; modelId: string };
 };
 
 export type WorkerRequestType = keyof WorkerRequestInputMap;
@@ -31,6 +35,8 @@ export type WorkerResultMap = {
   generate: OnnxRunResponse;
   cancel: GenerationCancelResult;
   preload: { ok: true };
+  "cache-status": { models: ModelCacheSummary[] };
+  "delete-cache": ModelCacheDeleteResult;
 };
 
 export type WorkerResponse =
@@ -45,6 +51,8 @@ export function isWorkerRequest(value: unknown): value is WorkerRequest {
   if (value.type === "capabilities") return true;
   if (value.type === "cancel") return typeof value.targetRequestId === "string" && value.targetRequestId.length > 0;
   if (value.type === "preload") return typeof value.modelId === "string" && value.modelId.length > 0;
+  if (value.type === "cache-status") return true;
+  if (value.type === "delete-cache") return typeof value.modelId === "string" && value.modelId.length > 0;
   if (value.type === "generate") {
     return isChat(value.messages)
       && typeof value.modelId === "string"
@@ -86,7 +94,24 @@ export function isWorkerResult(type: WorkerRequestType, value: unknown): value i
     return typeof value.cancelled === "boolean"
       && (typeof value.targetRequestId === "string" || (value.cancelled === false && value.targetRequestId === null));
   }
+  if (type === "cache-status") {
+    return Array.isArray(value.models) && value.models.every(isModelCacheSummary);
+  }
+  if (type === "delete-cache") {
+    return value.deleted === true && typeof value.modelId === "string";
+  }
   return value.ok === true;
+}
+
+function isModelCacheSummary(value: unknown) {
+  return isRecord(value)
+    && typeof value.modelId === "string"
+    && (value.state === "missing" || value.state === "partial" || value.state === "cached")
+    && isFiniteNonNegative(value.resumableBytes)
+    && isFiniteNonNegative(value.verifiedBytes)
+    && isFinitePositive(value.totalBytes)
+    && Number(value.resumableBytes) <= Number(value.totalBytes)
+    && Number(value.verifiedBytes) <= Number(value.totalBytes);
 }
 
 function isChat(value: unknown): value is ChatTurn[] {
