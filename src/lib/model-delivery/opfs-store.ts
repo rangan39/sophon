@@ -93,7 +93,7 @@ export function createArtifactStateStore(): ArtifactStateStore {
 }
 
 export async function openArtifactFile(model: ModelDeliveryManifest, artifact: ModelDeliveryArtifact): Promise<OpenArtifactFile> {
-  if (!supportsPersistentModelDelivery()) throw new ModelDeliveryUnavailableError("OPFS or IndexedDB is unavailable.");
+  if (!supportsPersistentModelDelivery()) throw new ModelDeliveryUnavailableError("Persistent model storage is unavailable in this browser.");
   try {
     const root = await navigator.storage.getDirectory();
     const app = await root.getDirectoryHandle("sophon-models", { create: true });
@@ -102,12 +102,12 @@ export async function openArtifactFile(model: ModelDeliveryManifest, artifact: M
     const revisionDirectory = await modelDirectory.getDirectoryHandle(model.revision, { create: true });
     const handle = await revisionDirectory.getFileHandle(artifact.externalPath, { create: true }) as SyncFileHandle;
     if (typeof handle.createSyncAccessHandle !== "function") {
-      throw new ModelDeliveryUnavailableError("Synchronous OPFS access is unavailable in this worker.");
+      throw new ModelDeliveryUnavailableError("This browser cannot open model storage for local inference.");
     }
     const access = await handle.createSyncAccessHandle();
     if (typeof access.read !== "function") {
       access.close();
-      throw new ModelDeliveryUnavailableError("Positioned OPFS reads are unavailable in this worker.");
+      throw new ModelDeliveryUnavailableError("This browser cannot read model files in the format local inference requires.");
     }
     let closed = false;
     return {

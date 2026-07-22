@@ -40,9 +40,17 @@ Conversations remain structured until they reach the pipeline, allowing the Cohe
 
 The registry is paired with an allowlisted artifact manifest containing immutable repository revisions, exact paths, byte sizes, and SHA-256 digests. The existing model worker is also the delivery worker, which keeps main-thread work and cross-worker copies out of the hot path.
 
-Supported browsers use one global queue with at most four HTTP range requests. Each 64 MiB segment is streamed into an OPFS synchronous access handle at its final byte offset. A segment becomes resumable only after its writes and `flush()` complete, followed by an IndexedDB manifest commit. Strong ETags and `If-Range` protect resumed files from remote revision drift. After all segments complete, Sophon sequentially hashes the OPFS file and exposes it to ONNX Runtime only when the digest matches the pinned manifest.
+Supported browsers use one global adaptive queue for HTTP range requests. It starts with four streams, measures completed-range goodput in bounded epochs, probes upward only when throughput improves, caps concurrency at twelve, and backs off multiplicatively after transient failures. A build-time environment flag retains the fixed-four fallback.
 
-The persistent path is an optimization, not a second runtime. Missing platform APIs, absent range support, or unavailable storage fall back to Transformers.js and CacheStorage. Contract violations and integrity failures do not fall back: they fail closed. Large weights use OPFS only, avoiding a duplicate CacheStorage copy; small configuration and tokenizer resources keep the standard Transformers.js cache.
+Each 64 MiB segment is streamed into an OPFS synchronous access handle at its final byte offset and hashed as its response arrives. Fixed-size segment digests are generated from immutable revisions, checked against the existing whole-file hashes, and pinned with the runtime manifest. A segment becomes eligible for a durable checkpoint only after its exact size and digest match; transient corruption retries only that range. This removes the complete 2.33 GB verification reread from fresh downloads.
+
+Strong ETags and `If-Range` protect resumed files from remote revision drift. Downloads resumed from older partial state use an ordered incremental hasher that reads newly contiguous segments while later requests remain active, preserving whole-file verification without delaying all hashing until the network finishes. Ready files are still rehashed once per worker session before reuse, so a stale metadata record alone cannot authorize runtime bytes.
+
+Completed segments are checkpointed after four completions or one second, whichever comes first. A checkpoint flushes OPFS before committing its completed-segment set through a strict IndexedDB transaction. This order permits bounded redundant work after a crash but never records an unflushed segment as resumable. Graceful completion and cancellation drain the outstanding batch.
+
+The allowlist covers the ONNX graph, both external-data files, configuration, generation settings, and tokenizer resources at immutable repository commits. Large weights use OPFS only, avoiding a duplicate CacheStorage copy. Sophon streams and hashes the smaller resources before placing them under the CacheStorage keys Transformers.js expects, then initializes the pipeline in local-files-only mode. Missing platform APIs, unavailable quota, absent range support, contract violations, and integrity failures all fail closed.
+
+Preload and generation requests share the worker's targeted cancellation protocol. Cancelling a preload aborts probes and response readers but retains every flushed checkpoint; selection can resume it later. Cache inspection combines IndexedDB checkpoints, OPFS file sizes, and auxiliary CacheStorage entries. Where Web Locks are available, deletion takes an exclusive per-model lock; the worker also serializes the operation, disposes the live pipeline, and removes all three storage layers.
 
 The artifact release pipeline lives outside `src`. It converts the current 1.92 GiB + 256 MiB sidecars into five balanced, conventionally named shards, rewrites ONNX external locations, stably topologically orders the upstream node definitions, updates the Transformers.js shard count, and proves tensor identity before publication. It never runs during a Next.js or Vercel build.
 
@@ -75,6 +83,10 @@ Request-scoped worker events expose the same measurements during decoding withou
 ## Cross-origin isolation
 
 COOP/COEP headers are intentionally deferred. The experimental model path can follow Hugging Face redirects to multiple signed artifact and CDN origins, and the repository does not yet run a conformance check proving that every response in that chain satisfies COEP. Enabling cross-origin isolation before that check could block otherwise valid remote model downloads. Add the headers only alongside an end-to-end delivery test for every supported remote source.
+
+## Frontend delivery budget
+
+The initial layout/page entry set is capped at 80 KiB gzip. The Base UI tooltip used for immediate hover and keyboard-focus help moved the measured production entry set from 40,914 to 73,113 bytes gzip; the cap leaves about 12% headroom. This gate measures the existing Next.js entry-manifest boundary, not every deferred chunk requested by the route.
 
 ## Token display
 

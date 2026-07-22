@@ -103,7 +103,7 @@ Verified OPFS `File` objects are handed to Transformers.js as ONNX external data
 
 Delivery fails closed when OPFS, synchronous worker access, CacheStorage, strong validators, or HTTP ranges are unavailable; there is no unverified multi-gigabyte fallback. Sophon checks the browser's available storage before starting and surfaces quota failures explicitly. Model selection also makes a best-effort persistent-storage request, while the browser retains final control over quota and eviction.
 
-Switching models terminates the active worker and releases its runtime resources while verified files remain under browser-managed site storage. The UI reports approximate usage and quota through the Storage API and distinguishes downloading, resuming, verification, and cached initialization.
+Switching models or pressing Pause aborts active network reads without discarding flushed 64 MiB checkpoints. The model library distinguishes partial and fully cached models, and provides per-model deletion that disposes any live pipeline before removing OPFS, IndexedDB, and CacheStorage data. The UI also reports approximate site usage and quota through the Storage API.
 
 ## Repacking model artifacts
 

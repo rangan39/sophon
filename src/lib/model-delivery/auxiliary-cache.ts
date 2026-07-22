@@ -13,7 +13,7 @@ export async function ensureAuxiliaryArtifact(
   onProgress: (progress: DeliveryProgress) => void,
   signal?: AbortSignal
 ) {
-  if (typeof caches === "undefined") throw new ModelDeliveryUnavailableError("Browser CacheStorage is unavailable for verified model metadata.");
+  if (typeof caches === "undefined") throw new ModelDeliveryUnavailableError("This browser cannot store the model files Sophon needs.");
   throwIfAborted(signal);
   const cache = await caches.open(TRANSFORMERS_CACHE_NAME);
   const key = getArtifactUrl(model, artifact);

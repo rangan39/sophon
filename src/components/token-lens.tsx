@@ -2,6 +2,7 @@
 
 import { type CSSProperties, type KeyboardEvent, lazy, memo, Suspense, useMemo, useRef, useState } from "react";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
+import { InfoHint } from "@/components/ui/info-hint";
 import { groupTokenPieces, type ContextTokenPiece, type TokenWord } from "@/lib/token-display";
 import { cn } from "@/lib/utils";
 
@@ -44,7 +45,7 @@ export const InspectableMessage = memo(function InspectableMessage({ content, me
     if (mode === "tokens") {
       return tokens.map((token, index) => ({
         active: token.inContext !== false,
-        ariaLabel: `Token ${index + 1}, ID ${token.id}: ${describeToken(token.text)}${token.inContext === false ? ", omitted from active context" : ""}`,
+        ariaLabel: `Token ${index + 1}, ID ${token.id}: ${describeToken(token.text)}${token.inContext === false ? ", outside context" : ""}`,
         key: `${index}-${token.id}`,
         selection: { kind: "token", index, token },
         text: token.text,
@@ -54,7 +55,7 @@ export const InspectableMessage = memo(function InspectableMessage({ content, me
     if (mode === "words") {
       return words.map((word, index) => ({
         active: word.inContext,
-        ariaLabel: `Word segment ${index + 1}, ${describeTokenRange(word.tokenIndexes)}: ${describeToken(word.text)}${word.inContext ? "" : ", omitted from active context"}`,
+        ariaLabel: `Word segment ${index + 1}, ${describeTokenRange(word.tokenIndexes)}: ${describeToken(word.text)}${word.inContext ? "" : ", outside context"}`,
         key: `${index}-${word.tokenIds.join("-")}`,
         selection: { kind: "word", index, word },
         text: word.text
@@ -84,6 +85,7 @@ export const InspectableMessage = memo(function InspectableMessage({ content, me
       {(meta || hasTokens) ? (
         <div className={cn("flex max-w-full flex-wrap items-center gap-x-2 gap-y-1.5 px-1", role === "user" && "flex-row-reverse")}>
           {meta ? <span className={cn("min-w-0 max-w-full break-words text-xs text-[#aab4c3]", role === "user" && "text-right")}>{meta}</span> : null}
+          {role === "assistant" && meta && hasTokens ? <InfoHint concept="generationMetrics" /> : null}
           {hasTokens ? <TokenModeControl mode={mode} onChange={changeMode} /> : null}
         </div>
       ) : null}
@@ -126,7 +128,7 @@ function MarkdownMessage({ content, role }: Pick<InspectableMessageProps, "conte
 function TokenModeControl({ mode, onChange }: { mode: TokenMode; onChange: (mode: TokenMode) => void }) {
   return (
     <div aria-label="Message display granularity" className="flex max-w-full shrink-0 flex-wrap items-center rounded-md border border-white/[.16] bg-black/25 p-0.5 font-mono text-[10px] uppercase tracking-[0.1em] text-[#aab4c3]" role="group">
-      <span aria-hidden="true" className="px-2 font-serif text-sm normal-case tracking-normal text-sophon-signal-soft">τ</span>
+      <InfoHint className="text-sophon-signal-soft" concept="tokenLens" />
       {(["text", "tokens", "words"] as const).map((option) => (
         <button
           aria-pressed={mode === option}
@@ -212,10 +214,10 @@ function TokenInspector({ role, selection, tokenCount }: {
           <span aria-hidden="true" className="text-[#64748b]">/</span>
           <span className="max-w-52 truncate normal-case tracking-normal text-[#d7dde8]">“{details.text}”</span>
           <span aria-hidden="true" className="text-[#64748b]">/</span>
-          <span className={details.active ? "text-sophon-verified" : "text-sophon-warning"}>{details.active ? "active context" : "windowed out"}</span>
+          <span className={details.active ? "text-sophon-verified" : "text-sophon-warning"}>{details.active ? "within context" : "outside context"}</span>
         </>
       ) : (
-        <><span className="font-serif text-sm normal-case text-sophon-signal-soft">τ</span><span>Select a segment</span><span className="ml-auto tabular-nums text-[#94a3b8]">{tokenCount} tok</span></>
+        <><span className="font-serif text-sm normal-case text-sophon-signal-soft">τ</span><span>Select a segment</span><span className="ml-auto tabular-nums text-[#94a3b8]">{tokenCount} tokens</span></>
       )}
     </div>
   );
@@ -225,14 +227,14 @@ function selectionDetails(selection: TokenSelection, role: InspectableMessagePro
   if (!selection) return null;
   if (selection.kind === "token") {
     return {
-      index: `τ${selection.index + 1}`,
+      index: `Token ${selection.index + 1}`,
       ids: `ID ${selection.token.id}`,
       text: describeToken(selection.token.text),
       active: role === "assistant" || selection.token.inContext !== false
     };
   }
   return {
-    index: `ω${selection.index + 1}`,
+    index: `Word ${selection.index + 1}`,
     ids: selection.word.tokenIds.length === 1 ? `ID ${selection.word.tokenIds[0]}` : `${selection.word.tokenIds.length} IDs`,
     text: describeToken(selection.word.text),
     active: role === "assistant" || selection.word.inContext

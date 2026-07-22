@@ -200,11 +200,10 @@ async function getPipeline(model: ModelManifest, provider: ModelProvider, log: (
   const cacheKey = `${model.id}:${provider}`;
   const cached = pipelineCache.get(cacheKey);
   if (cached) {
-    log({ level: "info", message: "Using cached model pipeline", detail: `${model.label} · ${provider}`, phase: "runtime" });
+    log({ level: "info", message: "Reusing loaded model", detail: `${model.label} · ${formatProvider(provider)}`, phase: "runtime" });
     return cached;
   }
   const source = model.source.kind === "local" ? model.source.baseUrl : model.source.repo;
-  const sourceDetail = model.source.kind === "local" ? source : `${source}@${model.source.revision}`;
   let lastProgress = -1;
   const progressCallback = (event: ProgressInfo) => {
     if (event.status !== "progress_total" || !Number.isFinite(event.loaded) || !Number.isFinite(event.total) || event.total <= 0) return;
@@ -214,7 +213,7 @@ async function getPipeline(model: ModelManifest, provider: ModelProvider, log: (
     lastProgress = progress;
     log({ level: "info", message: "Loading model", phase: "download", progress: { loaded, total: event.total } });
   };
-  log({ level: "info", message: "Loading model", detail: sourceDetail, phase: "download" });
+  log({ level: "info", message: "Loading model", detail: `${model.label} · ${model.format.sizeLabel}`, phase: "download" });
   const loading = import("@huggingface/transformers").then(async ({ env, pipeline }) => {
     throwIfCancelled(signal);
     const allowLocalModels = env.allowLocalModels;
@@ -231,7 +230,7 @@ async function getPipeline(model: ModelManifest, provider: ModelProvider, log: (
       if (delivery) {
         log({
           level: "info",
-          message: "Loading verified model",
+          message: "Loading downloaded model",
           detail: "Reading model data from browser storage",
           phase: "runtime",
           progress: { loaded: delivery.totalBytes, total: delivery.totalBytes, stage: "cache" }
@@ -324,7 +323,7 @@ async function resolveProvider(model: ModelManifest): Promise<ModelProvider> {
   const capabilities = await getRuntimeCapabilities();
   const provider = resolveModelProvider(model, capabilities);
   if (provider) return provider;
-  throw new Error(`${model.label} requires ${model.providers.join(" or ")}, but this browser exposes neither compatible provider.`);
+  throw new Error(`${model.label} needs browser GPU support, which is unavailable in this browser.`);
 }
 
 async function detectRuntimeCapabilities(): Promise<RuntimeCapabilities> {
@@ -385,7 +384,11 @@ function decodeTokens(tokenizer: PreTrainedTokenizer, tokenIds: readonly number[
 }
 
 function formatRate(tokensPerSecond: number | null) {
-  return tokensPerSecond === null ? "decode rate pending" : `${tokensPerSecond.toFixed(1)} decode tok/s`;
+  return tokensPerSecond === null ? "Speed pending" : `${tokensPerSecond.toFixed(1)} tokens/s`;
+}
+
+function formatProvider(provider: ModelProvider) {
+  return provider === "webgpu" ? "WebGPU" : "WASM";
 }
 
 function clamp(value: number, min: number, max: number) {

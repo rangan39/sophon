@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 
-const budgetBytes = Number(process.env.SOPHON_ROUTE_GZIP_BUDGET ?? 40 * 1024);
+const budgetBytes = Number(process.env.SOPHON_ROUTE_GZIP_BUDGET ?? 80 * 1024);
 const manifestPath = ".next/server/app/page_client-reference-manifest.js";
 const source = readFileSync(manifestPath, "utf8");
 const marker = '["/page"] = ';

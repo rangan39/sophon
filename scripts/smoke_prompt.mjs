@@ -61,7 +61,7 @@ try {
 async function waitForPromptResult(page, prompt, timeoutMs) {
   const startedAt = Date.now();
   const userMessage = page.getByText(prompt, { exact: true });
-  const metrics = page.getByText(/\d+(?:\.\d+)? tok\/s/).last();
+  const metrics = page.getByText(/\d+(?:\.\d+)? tokens\/s/).last();
   const knownFailurePatterns = [
     /WebGPU unavailable/i,
     /model worker failed/i,
