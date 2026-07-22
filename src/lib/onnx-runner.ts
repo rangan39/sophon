@@ -1,7 +1,12 @@
 import type { PreTrainedTokenizer, ProgressInfo, TextGenerationPipeline } from "@huggingface/transformers";
 import { requireModelDefinition, resolveModelProvider, type ModelManifest, type ModelProvider } from "@/lib/onnx-models";
 import { calculateGenerationTiming, createGenerationTelemetryGate } from "@/lib/generation-metrics";
-import { prepareModelDelivery, type DeliveryProgress } from "@/lib/model-delivery/index";
+import {
+  deleteModelCache,
+  getModelCacheStatus,
+  prepareModelDelivery,
+  type DeliveryProgress
+} from "@/lib/model-delivery/index";
 import { decodeTokenPieces, markActiveContext, sliceTokenPiecesByTextRange } from "@/lib/token-display";
 import type {
   ChatTurn,
@@ -60,9 +65,28 @@ export async function runOnnxTextModel(messages: readonly ChatTurn[], options: O
   return runTransformersJsModel(normalized, model, options);
 }
 
-export async function preloadOnnxModel(modelId: string, onLog: (event: OnnxLogEvent) => void = () => undefined) {
+export async function preloadOnnxModel(modelId: string, onLog: (event: OnnxLogEvent) => void = () => undefined, signal?: AbortSignal) {
   const model = requireModelDefinition(modelId);
-  await getPipeline(model, await resolveProvider(model), onLog);
+  await getPipeline(model, await resolveProvider(model), onLog, signal);
+}
+
+export async function getOnnxModelCacheStatus() {
+  return { models: await getModelCacheStatus() };
+}
+
+export async function deleteOnnxModelCache(modelId: string, signal?: AbortSignal) {
+  requireModelDefinition(modelId);
+  const matching = [...pipelineCache.entries()].filter(([key]) => key.startsWith(`${modelId}:`));
+  for (const [key] of matching) pipelineCache.delete(key);
+  await Promise.all(matching.map(async ([, loading]) => {
+    try {
+      const loaded = await loading;
+      await loaded.dispose();
+    } catch {
+      // A failed or cancelled pipeline has no live session left to dispose.
+    }
+  }));
+  return deleteModelCache(modelId, signal);
 }
 
 async function runTransformersJsModel(
@@ -78,7 +102,7 @@ async function runTransformersJsModel(
 
   try {
     const provider = await resolveProvider(model);
-    const generator = await getPipeline(model, provider, log);
+    const generator = await getPipeline(model, provider, log, options.signal);
     throwIfCancelled(options.signal);
     const modelLoadMs = performance.now() - loadStartedAt;
     const generationStartedAt = performance.now();
@@ -171,7 +195,8 @@ async function runTransformersJsModel(
   }
 }
 
-async function getPipeline(model: ModelManifest, provider: ModelProvider, log: (event: OnnxLogEvent) => void) {
+async function getPipeline(model: ModelManifest, provider: ModelProvider, log: (event: OnnxLogEvent) => void, signal?: AbortSignal) {
+  throwIfCancelled(signal);
   const cacheKey = `${model.id}:${provider}`;
   const cached = pipelineCache.get(cacheKey);
   if (cached) {
@@ -191,6 +216,9 @@ async function getPipeline(model: ModelManifest, provider: ModelProvider, log: (
   };
   log({ level: "info", message: "Loading model", detail: sourceDetail, phase: "download" });
   const loading = import("@huggingface/transformers").then(async ({ env, pipeline }) => {
+    throwIfCancelled(signal);
+    const allowLocalModels = env.allowLocalModels;
+    const allowRemoteModels = env.allowRemoteModels;
     env.allowLocalModels = model.source.kind === "local";
     env.allowRemoteModels = model.source.kind === "huggingface";
     const remotePathTemplate = env.remotePathTemplate;
@@ -198,7 +226,8 @@ async function getPipeline(model: ModelManifest, provider: ModelProvider, log: (
     try {
       const delivery = await prepareModelDelivery(model, (progress) => {
         log({ level: "info", message: deliveryProgressMessage(progress), phase: "download", progress });
-      });
+      }, signal);
+      throwIfCancelled(signal);
       if (delivery) {
         log({
           level: "info",
@@ -208,17 +237,24 @@ async function getPipeline(model: ModelManifest, provider: ModelProvider, log: (
           progress: { loaded: delivery.totalBytes, total: delivery.totalBytes, stage: "cache" }
         });
       }
+      if (delivery) {
+        env.allowLocalModels = true;
+        env.allowRemoteModels = false;
+      }
       return await pipeline("text-generation", source, {
         device: provider,
         dtype: model.format.quantization,
         progress_callback: delivery ? undefined : progressCallback,
         ...(delivery ? {
+          local_files_only: true,
           use_external_data_format: false,
           session_options: { externalData: delivery.externalData }
         } : {}),
         ...(model.source.kind === "huggingface" ? { revision: model.source.revision } : {})
       });
     } finally {
+      env.allowLocalModels = allowLocalModels;
+      env.allowRemoteModels = allowRemoteModels;
       env.remotePathTemplate = remotePathTemplate;
     }
   }).catch((error) => {

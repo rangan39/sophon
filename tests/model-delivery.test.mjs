@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
+import { register } from "node:module";
 import test from "node:test";
-import {
+
+register("./alias-loader.mjs", import.meta.url);
+
+const {
   getArtifactKey,
   getArtifactUrl,
   getModelDeliveryManifest,
   MODEL_DELIVERY_MANIFESTS,
   MODEL_SEGMENT_SIZE
-} from "../src/lib/model-delivery/manifest.ts";
+} = await import("../src/lib/model-delivery/manifest.ts");
 
 const EXPECTED = {
   "tiny-aya-global": ["onnx-community/tiny-aya-global-ONNX", "7fff1be9627e40f0d89c33f406882bdafb56ec90", [
@@ -27,7 +31,7 @@ const EXPECTED = {
   ]]
 };
 
-test("pins the two current external-data artifacts for every Tiny Aya model", () => {
+test("pins every runtime artifact for the four Tiny Aya models", () => {
   assert.equal(MODEL_SEGMENT_SIZE, 64 * 1024 * 1024);
   assert.deepEqual(MODEL_DELIVERY_MANIFESTS.map(({ modelId }) => modelId), Object.keys(EXPECTED));
   for (const model of MODEL_DELIVERY_MANIFESTS) {
@@ -45,8 +49,25 @@ test("pins the two current external-data artifacts for every Tiny Aya model", ()
     ]);
     assert.deepEqual(model.externalData.map(({ size }) => size), [2_064_531_456, 268_435_456]);
     assert.deepEqual(model.externalData.map(({ sha256 }) => sha256), hashes);
-    assert.equal(model.externalData.reduce((total, artifact) => total + artifact.size, 0), 2_332_966_912);
     for (const artifact of model.externalData) {
+      assert.equal(artifact.segmentSha256.length, Math.ceil(artifact.size / MODEL_SEGMENT_SIZE));
+      assert.ok(artifact.segmentSha256.every((digest) => /^[a-f0-9]{64}$/.test(digest)));
+    }
+    assert.equal(model.externalData.reduce((total, artifact) => total + artifact.size, 0), 2_332_966_912);
+    assert.deepEqual(model.auxiliary.map(({ path }) => path), [
+      "config.json",
+      "onnx/model_q4f16.onnx",
+      "generation_config.json",
+      "tokenizer.json",
+      "tokenizer_config.json"
+    ]);
+    assert.ok(model.auxiliary.every(({ sha256 }) => /^[a-f0-9]{64}$/.test(sha256)));
+    assert.ok(model.auxiliary.every(({ size }) => Number.isSafeInteger(size) && size > 0));
+    for (const artifact of model.externalData) {
+      assert.equal(getArtifactUrl(model, artifact), `https://huggingface.co/${repo}/resolve/${revision}/${artifact.path}`);
+      assert.equal(getArtifactKey(model, artifact), `${model.modelId}:${revision}:${artifact.path}`);
+    }
+    for (const artifact of model.auxiliary) {
       assert.equal(getArtifactUrl(model, artifact), `https://huggingface.co/${repo}/resolve/${revision}/${artifact.path}`);
       assert.equal(getArtifactKey(model, artifact), `${model.modelId}:${revision}:${artifact.path}`);
     }

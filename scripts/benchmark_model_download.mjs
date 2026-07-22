@@ -6,6 +6,7 @@ const MiB = 1024 * 1024;
 const url = process.env.SOPHON_BENCHMARK_URL
   ?? "https://huggingface.co/onnx-community/tiny-aya-global-ONNX/resolve/7fff1be9627e40f0d89c33f406882bdafb56ec90/onnx/model_q4f16.onnx_data";
 const sampleBytes = readPositiveInteger(process.env.SOPHON_BENCHMARK_BYTES, 64 * MiB);
+const trialCount = readPositiveInteger(process.env.SOPHON_BENCHMARK_TRIALS, 3);
 const concurrencyValues = (process.env.SOPHON_BENCHMARK_CONCURRENCY ?? "1,2,4")
   .split(",")
   .map((value) => readPositiveInteger(value.trim()))
@@ -15,23 +16,42 @@ const probe = await requestRange(0, 0);
 const totalBytes = readTotalBytes(probe.headers.get("content-range"));
 await probe.body?.cancel();
 const bytesToRead = Math.min(sampleBytes, totalBytes);
-const results = [];
+const samples = [];
 
-for (const concurrency of concurrencyValues) {
-  const ranges = partition(bytesToRead, concurrency);
-  const startedAt = performance.now();
-  const transferred = (await Promise.all(ranges.map(({ start, end }) => consumeRange(start, end))))
-    .reduce((total, value) => total + value, 0);
-  const durationMs = performance.now() - startedAt;
-  results.push({
-    concurrency,
-    transferredBytes: transferred,
-    durationMs: Math.round(durationMs),
-    mebibytesPerSecond: Number((transferred / MiB / (durationMs / 1000)).toFixed(2))
-  });
+for (let trial = 0; trial < trialCount; trial += 1) {
+  const order = trial % 2 === 0 ? concurrencyValues : [...concurrencyValues].reverse();
+  for (const concurrency of order) {
+    const ranges = partition(bytesToRead, concurrency);
+    const startedAt = performance.now();
+    const transferred = (await Promise.all(ranges.map(({ start, end }) => consumeRange(start, end))))
+      .reduce((total, value) => total + value, 0);
+    const durationMs = performance.now() - startedAt;
+    samples.push({
+      trial: trial + 1,
+      concurrency,
+      transferredBytes: transferred,
+      durationMs: Math.round(durationMs),
+      mebibytesPerSecond: Number((transferred / MiB / (durationMs / 1000)).toFixed(2))
+    });
+  }
 }
 
-console.log(JSON.stringify({ url, totalBytes, sampleBytes: bytesToRead, results }, null, 2));
+const summaries = concurrencyValues.map((concurrency) => {
+  const throughput = samples
+    .filter((sample) => sample.concurrency === concurrency)
+    .map((sample) => sample.mebibytesPerSecond)
+    .sort((left, right) => left - right);
+  return {
+    concurrency,
+    trials: throughput.length,
+    minimumMebibytesPerSecond: throughput[0],
+    medianMebibytesPerSecond: percentile(throughput, 0.5),
+    p95MebibytesPerSecond: percentile(throughput, 0.95),
+    maximumMebibytesPerSecond: throughput.at(-1)
+  };
+});
+
+console.log(JSON.stringify({ url, totalBytes, sampleBytes: bytesToRead, trialCount, samples, summaries }, null, 2));
 
 async function consumeRange(start, end) {
   const response = await requestRange(start, end);
@@ -84,4 +104,10 @@ function readPositiveInteger(value, fallback) {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed <= 0) throw new Error(`Expected a positive integer, received ${JSON.stringify(value)}.`);
   return parsed;
+}
+
+function percentile(sorted, quantile) {
+  if (sorted.length === 0) return undefined;
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * quantile) - 1));
+  return sorted[index];
 }

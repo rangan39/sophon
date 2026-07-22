@@ -91,3 +91,18 @@ export type GenerationCancelResult = {
   cancelled: boolean;
   targetRequestId: string | null;
 };
+
+export type ModelCacheState = "missing" | "partial" | "cached";
+
+export type ModelCacheSummary = {
+  modelId: string;
+  state: ModelCacheState;
+  resumableBytes: number;
+  verifiedBytes: number;
+  totalBytes: number;
+};
+
+export type ModelCacheDeleteResult = {
+  modelId: string;
+  deleted: true;
+};
