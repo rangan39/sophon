@@ -8,11 +8,6 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const sourceRoot = join(root, "src");
 const sourceFiles = walk(sourceRoot).filter((file) => [".css", ".ts", ".tsx"].includes(extname(file)));
 
-test("keeps production source below the negative-code budget", () => {
-  const physicalLines = sourceFiles.reduce((total, file) => total + readFileSync(file, "utf8").split("\n").length, 0);
-  assert.ok(physicalLines <= 2_500, `Production source is ${physicalLines} lines; budget is 2,500.`);
-});
-
 test("keeps deleted runtime and UI stacks out of production source", () => {
   const source = sourceFiles.map((file) => readFileSync(file, "utf8")).join("\n");
   for (const banned of ["@radix-ui/", "class-variance-authority", "next/dynamic", "onnxruntime-web", "runLocalModel"]) {

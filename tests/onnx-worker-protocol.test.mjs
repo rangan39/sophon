@@ -7,7 +7,7 @@ test("accepts valid generation requests and rejects malformed numeric options", 
     type: "generate",
     requestId: "request-1",
     messages: [{ role: "user", content: "The signal is" }],
-    modelId: "tiny-gpt2",
+    modelId: "tiny-aya-global",
     options: { maxNewTokens: 24, temperature: 0.8, topK: 40 }
   }), true);
 
@@ -15,7 +15,7 @@ test("accepts valid generation requests and rejects malformed numeric options", 
     type: "generate",
     requestId: "request-2",
     messages: [{ role: "user", content: "The signal is" }],
-    modelId: "tiny-gpt2",
+    modelId: "tiny-aya-global",
     options: { maxNewTokens: "24" }
   }), false);
 
@@ -23,7 +23,7 @@ test("accepts valid generation requests and rejects malformed numeric options", 
     type: "generate",
     requestId: "request-3",
     messages: [{ role: "tool", content: "not supported" }],
-    modelId: "tiny-gpt2",
+    modelId: "tiny-aya-global",
     options: {}
   }), false);
 });
@@ -82,8 +82,32 @@ test("validates worker events before dispatching them", () => {
       p95InterTokenLatencyMs: null
     }
   }), true);
+  assert.equal(isWorkerResponse({
+    type: "log",
+    requestId: "request-1",
+    event: { level: "info", message: "Retrying", phase: "download", progress: { loaded: 90, total: 100, networkBytes: 125 } }
+  }), true, "retried bytes may exceed the unique artifact size");
   assert.equal(isWorkerResponse({ type: "log", requestId: "request-1", event: { level: "info", message: "Loading", phase: "download", progress: { loaded: 25, total: 100 } } }), true);
+  assert.equal(isWorkerResponse({
+    type: "log",
+    requestId: "request-1",
+    event: {
+      level: "info",
+      message: "Resuming",
+      phase: "download",
+      progress: { loaded: 75, total: 100, stage: "resume", resumedBytes: 50, networkBytes: 25, bytesPerSecond: 20, etaMs: 1250 }
+    }
+  }), true);
   for (const progress of [{ loaded: -1, total: 100 }, { loaded: 101, total: 100 }, { loaded: 0, total: 0 }, { loaded: Number.NaN, total: 100 }]) {
+    assert.equal(isWorkerResponse({ type: "log", requestId: "request-1", event: { level: "info", message: "Loading", progress } }), false);
+  }
+  for (const progress of [
+    { loaded: 25, total: 100, stage: "unknown" },
+    { loaded: 25, total: 100, resumedBytes: 101 },
+    { loaded: 25, total: 100, networkBytes: -1 },
+    { loaded: 25, total: 100, bytesPerSecond: Number.NaN },
+    { loaded: 25, total: 100, etaMs: -1 }
+  ]) {
     assert.equal(isWorkerResponse({ type: "log", requestId: "request-1", event: { level: "info", message: "Loading", progress } }), false);
   }
   assert.equal(isWorkerResponse({ type: "error", requestId: "request-1" }), false);

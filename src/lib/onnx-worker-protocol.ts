@@ -113,8 +113,17 @@ function isLogEvent(value: unknown): value is OnnxLogEvent {
     && typeof value.message === "string"
     && (value.detail === undefined || typeof value.detail === "string")
     && (value.phase === undefined || value.phase === "download" || value.phase === "tokenize" || value.phase === "inference" || value.phase === "generate" || value.phase === "runtime")
-    && (value.progress === undefined || (isRecord(value.progress) && typeof value.progress.loaded === "number" && Number.isFinite(value.progress.loaded) && value.progress.loaded >= 0 && typeof value.progress.total === "number" && Number.isFinite(value.progress.total) && value.progress.total > 0 && value.progress.loaded <= value.progress.total))
+    && (value.progress === undefined || isDownloadProgress(value.progress))
     && (value.durationMs === undefined || isFiniteNonNegative(value.durationMs));
+}
+
+function isDownloadProgress(value: unknown) {
+  if (!isRecord(value) || !isFiniteNonNegative(value.loaded) || !isFinitePositive(value.total) || Number(value.loaded) > Number(value.total)) return false;
+  if (value.stage !== undefined && value.stage !== "download" && value.stage !== "resume" && value.stage !== "verify" && value.stage !== "cache") return false;
+  if (value.resumedBytes !== undefined && (!isFiniteNonNegative(value.resumedBytes) || Number(value.resumedBytes) > Number(value.total))) return false;
+  if (value.networkBytes !== undefined && !isFiniteNonNegative(value.networkBytes)) return false;
+  return (value.bytesPerSecond === undefined || isFiniteNonNegative(value.bytesPerSecond))
+    && (value.etaMs === undefined || isFiniteNonNegative(value.etaMs));
 }
 
 function isTelemetryEvent(value: unknown): value is GenerationTelemetryEvent {
@@ -145,6 +154,10 @@ function isOptionalFiniteNumber(value: unknown) {
 
 function isFiniteNonNegative(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function isFinitePositive(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
 
 function isNullableFiniteNonNegative(value: unknown) {

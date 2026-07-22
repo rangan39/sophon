@@ -3,7 +3,8 @@ import { chromium } from "playwright";
 
 const url = process.env.SOPHON_SMOKE_URL ?? process.argv[2] ?? "http://localhost:3000";
 const prompt = process.env.SOPHON_SMOKE_PROMPT ?? process.argv[3] ?? "The proof is";
-const timeoutMs = Number(process.env.SOPHON_SMOKE_TIMEOUT_MS ?? 120_000);
+const modelId = process.env.SOPHON_SMOKE_MODEL ?? "tiny-aya-global";
+const timeoutMs = Number(process.env.SOPHON_SMOKE_TIMEOUT_MS ?? 30 * 60_000);
 
 let browser;
 let page;
@@ -31,6 +32,11 @@ try {
 
   console.log(`Opening ${url}`);
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+
+  console.log(`Selecting model: ${modelId}`);
+  const modelCard = page.locator(`[data-model-surface="desktop"][data-model-id="${modelId}"]`);
+  await modelCard.click();
+  await page.getByText("Model ready", { exact: true }).waitFor({ state: "visible", timeout: timeoutMs });
 
   console.log(`Running prompt: ${JSON.stringify(prompt)}`);
   await page.getByPlaceholder("Ask the local model anything...").fill(prompt);

@@ -3,13 +3,24 @@ import type { GenerationTimingSnapshot } from "@/lib/generation-metrics";
 
 export type OnnxRuntimePhase = "download" | "tokenize" | "inference" | "generate" | "runtime";
 export type OnnxLogLevel = "info" | "success" | "warning" | "error";
+export type OnnxDownloadStage = "download" | "resume" | "verify" | "cache";
+
+export type OnnxDownloadProgress = {
+  loaded: number;
+  total: number;
+  stage?: OnnxDownloadStage;
+  resumedBytes?: number;
+  networkBytes?: number;
+  bytesPerSecond?: number;
+  etaMs?: number;
+};
 
 export type OnnxLogEvent = {
   level: OnnxLogLevel;
   message: string;
   detail?: string;
   phase?: OnnxRuntimePhase;
-  progress?: { loaded: number; total: number };
+  progress?: OnnxDownloadProgress;
   durationMs?: number;
 };
 
@@ -19,7 +30,7 @@ export type ChatTurn = {
 };
 
 export type OnnxRunOptions = {
-  modelId?: string;
+  modelId: string;
   maxNewTokens?: number;
   temperature?: number;
   topK?: number;

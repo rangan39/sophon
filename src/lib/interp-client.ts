@@ -21,16 +21,19 @@ export type { OnnxLogEvent as RuntimeLogEvent, OnnxRunResponse as RunPromptResul
 type PendingRequest = {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
-  timeoutId: number;
+  idleTimeoutId: number;
+  overallTimeoutId?: number;
+  requestType: WorkerRequestType;
+  lastProgress?: { loaded: number; stage: string };
   onLog?: (event: OnnxLogEvent) => void;
   onTelemetry?: (event: GenerationTelemetryEvent) => void;
 };
 
-const WORKER_TIMEOUT_MS: Record<WorkerRequestType, number> = {
-  capabilities: 10_000,
-  generate: 30 * 60_000,
-  cancel: 10_000,
-  preload: 30 * 60_000
+const WORKER_TIMEOUTS: Record<WorkerRequestType, { idleMs: number; overallMs: number }> = {
+  capabilities: { idleMs: 10_000, overallMs: 10_000 },
+  generate: { idleMs: 30 * 60_000, overallMs: 60 * 60_000 },
+  cancel: { idleMs: 10_000, overallMs: 10_000 },
+  preload: { idleMs: 2 * 60_000, overallMs: 6 * 60 * 60_000 }
 };
 
 let runtimeWorker: Worker | null = null;
@@ -42,11 +45,11 @@ export function getCapabilities(): Promise<RuntimeCapabilities> {
   return dispatchWorkerRequest({ type: "capabilities" }).promise;
 }
 
-export async function runPrompt(messages: readonly ChatTurn[], options: OnnxRunOptions = {}): Promise<OnnxRunResponse> {
+export async function runPrompt(messages: readonly ChatTurn[], options: OnnxRunOptions): Promise<OnnxRunResponse> {
   const request = dispatchWorkerRequest({
     type: "generate",
     messages: [...messages],
-    modelId: options.modelId ?? "tiny-gpt2",
+    modelId: options.modelId,
     options: {
       maxNewTokens: options.maxNewTokens,
       temperature: options.temperature,
@@ -96,6 +99,7 @@ function getWorker() {
     const pending = pendingRequests.get(response.requestId);
     if (!pending) return;
     if (response.type === "log") {
+      refreshIdleWatchdog(response.requestId, pending, response.event);
       pending.onLog?.(response.event);
       return;
     }
@@ -125,16 +129,20 @@ function dispatchWorkerRequest<R extends WorkerRequestInput>(
 ): { requestId: string; promise: Promise<WorkerResultMap[R["type"]]> } {
   const requestId = `sophon-${Date.now()}-${requestCounter += 1}`;
   const promise = new Promise<WorkerResultMap[R["type"]]>((resolve, reject) => {
-    const timeoutId = window.setTimeout(() => {
-      resetRuntimeWorker(new Error(`The ${request.type} operation timed out. The model worker was restarted.`));
-    }, WORKER_TIMEOUT_MS[request.type]);
+    const timeout = WORKER_TIMEOUTS[request.type];
+    const idleTimeoutId = startWorkerTimeout(requestId, request.type, timeout.idleMs, "stopped reporting progress");
+    const overallTimeoutId = timeout.overallMs > timeout.idleMs
+      ? startWorkerTimeout(requestId, request.type, timeout.overallMs, "exceeded its safe time limit")
+      : undefined;
     pendingRequests.set(requestId, {
       resolve: (value) => {
         if (isWorkerResult(request.type, value)) resolve(value as WorkerResultMap[R["type"]]);
         else reject(new Error(`The model worker returned an invalid ${request.type} result.`));
       },
       reject,
-      timeoutId,
+      idleTimeoutId,
+      overallTimeoutId,
+      requestType: request.type,
       onLog,
       onTelemetry
     });
@@ -148,10 +156,28 @@ function dispatchWorkerRequest<R extends WorkerRequestInput>(
   return { requestId, promise };
 }
 
+function startWorkerTimeout(requestId: string, requestType: WorkerRequestType, timeoutMs: number, reason: string) {
+  return window.setTimeout(() => {
+    if (!pendingRequests.has(requestId)) return;
+    resetRuntimeWorker(new Error(`The ${requestType} operation ${reason}. The model worker was restarted.`));
+  }, timeoutMs);
+}
+
+function refreshIdleWatchdog(requestId: string, pending: PendingRequest, event: OnnxLogEvent) {
+  const progress = event.progress;
+  if (!progress) return;
+  const stage = progress.stage ?? "download";
+  if (pending.lastProgress?.stage === stage && progress.loaded <= pending.lastProgress.loaded) return;
+  pending.lastProgress = { loaded: progress.loaded, stage };
+  window.clearTimeout(pending.idleTimeoutId);
+  pending.idleTimeoutId = startWorkerTimeout(requestId, pending.requestType, WORKER_TIMEOUTS[pending.requestType].idleMs, "stopped reporting progress");
+}
+
 function settlePendingRequest(requestId: string) {
   const pending = pendingRequests.get(requestId);
   if (!pending) return;
-  window.clearTimeout(pending.timeoutId);
+  window.clearTimeout(pending.idleTimeoutId);
+  if (pending.overallTimeoutId !== undefined) window.clearTimeout(pending.overallTimeoutId);
   pendingRequests.delete(requestId);
 }
 
@@ -161,7 +187,8 @@ function resetRuntimeWorker(error: Error) {
   activeGenerationRequestId = null;
   worker?.terminate();
   for (const request of pendingRequests.values()) {
-    window.clearTimeout(request.timeoutId);
+    window.clearTimeout(request.idleTimeoutId);
+    if (request.overallTimeoutId !== undefined) window.clearTimeout(request.overallTimeoutId);
     request.reject(error);
   }
   pendingRequests.clear();

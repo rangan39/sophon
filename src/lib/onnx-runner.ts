@@ -1,6 +1,7 @@
 import type { PreTrainedTokenizer, ProgressInfo, TextGenerationPipeline } from "@huggingface/transformers";
 import { requireModelDefinition, resolveModelProvider, type ModelManifest, type ModelProvider } from "@/lib/onnx-models";
 import { calculateGenerationTiming, createGenerationTelemetryGate } from "@/lib/generation-metrics";
+import { prepareModelDelivery, type DeliveryProgress } from "@/lib/model-delivery/index";
 import { decodeTokenPieces, markActiveContext, sliceTokenPiecesByTextRange } from "@/lib/token-display";
 import type {
   ChatTurn,
@@ -15,7 +16,7 @@ import type {
 } from "@/lib/onnx-types";
 
 type PipelineLike = TextGenerationPipeline;
-type PreparedGenerationInput = string | ChatTurn[];
+type PreparedGenerationInput = ChatTurn[];
 
 const pipelineCache = new Map<string, Promise<PipelineLike>>();
 let runtimeCapabilitiesPromise: Promise<RuntimeCapabilities> | null = null;
@@ -25,15 +26,11 @@ export function getRuntimeCapabilities() {
   return runtimeCapabilitiesPromise;
 }
 
-export function prepareGenerationInput(family: ModelManifest["family"], messages: readonly ChatTurn[]): PreparedGenerationInput {
-  const normalized = messages.flatMap((message) => {
+export function prepareGenerationInput(messages: readonly ChatTurn[]): PreparedGenerationInput {
+  return messages.flatMap((message) => {
     const content = message.content.trim();
     return content ? [{ role: message.role, content }] : [];
   });
-  if (family !== "gpt2") return normalized;
-  if (normalized.length === 0) return "";
-  const prompt = normalized.map((message) => `${roleLabel(message.role)}: ${message.content}`).join("\n\n");
-  return `${prompt}\n\nAssistant:`;
 }
 
 export function readGeneratedText(output: unknown) {
@@ -53,7 +50,7 @@ export function readGeneratedText(output: unknown) {
   return "";
 }
 
-export async function runOnnxTextModel(messages: readonly ChatTurn[], options: OnnxRunOptions = {}): Promise<OnnxRunResponse> {
+export async function runOnnxTextModel(messages: readonly ChatTurn[], options: OnnxRunOptions): Promise<OnnxRunResponse> {
   const model = requireModelDefinition(options.modelId);
   if (options.signal?.aborted) return cancelled();
   const normalized = messages.filter((message) => message.content.trim());
@@ -85,13 +82,13 @@ async function runTransformersJsModel(
     throwIfCancelled(options.signal);
     const modelLoadMs = performance.now() - loadStartedAt;
     const generationStartedAt = performance.now();
-    const originalInput = prepareGenerationInput(model.family, messages);
+    const originalInput = prepareGenerationInput(messages);
     const originalRenderedInput = renderGenerationInput(generator.tokenizer, originalInput);
     const promptTokenCount = generator.tokenizer.encode(originalRenderedInput, { add_special_tokens: false }).length;
     const contextLimit = readContextLimit(generator.tokenizer, model);
     const maxInputTokens = contextLimit === null ? null : Math.max(1, contextLimit - maxNewTokens);
-    const fittedMessages = fitMessagesToContext(generator.tokenizer, model.family, messages, maxInputTokens);
-    const input = prepareGenerationInput(model.family, fittedMessages);
+    const fittedMessages = fitMessagesToContext(generator.tokenizer, messages, maxInputTokens);
+    const input = prepareGenerationInput(fittedMessages);
     const renderedInput = renderGenerationInput(generator.tokenizer, input);
     const inputTokenIds = generator.tokenizer.encode(renderedInput, { add_special_tokens: false });
     (generator.tokenizer as PreTrainedTokenizer & { truncation_side: string }).truncation_side = "left";
@@ -199,10 +196,26 @@ async function getPipeline(model: ModelManifest, provider: ModelProvider, log: (
     const remotePathTemplate = env.remotePathTemplate;
     if (model.source.kind === "huggingface") env.remotePathTemplate = `{model}/resolve/${model.source.revision}/`;
     try {
+      const delivery = await prepareModelDelivery(model, (progress) => {
+        log({ level: "info", message: deliveryProgressMessage(progress), phase: "download", progress });
+      });
+      if (delivery) {
+        log({
+          level: "info",
+          message: "Loading verified model",
+          detail: "Reading model data from browser storage",
+          phase: "runtime",
+          progress: { loaded: delivery.totalBytes, total: delivery.totalBytes, stage: "cache" }
+        });
+      }
       return await pipeline("text-generation", source, {
         device: provider,
         dtype: model.format.quantization,
-        progress_callback: progressCallback,
+        progress_callback: delivery ? undefined : progressCallback,
+        ...(delivery ? {
+          use_external_data_format: false,
+          session_options: { externalData: delivery.externalData }
+        } : {}),
         ...(model.source.kind === "huggingface" ? { revision: model.source.revision } : {})
       });
     } finally {
@@ -216,8 +229,14 @@ async function getPipeline(model: ModelManifest, provider: ModelProvider, log: (
   return loading;
 }
 
+function deliveryProgressMessage(progress: DeliveryProgress) {
+  if (progress.stage === "resume") return "Resuming model download";
+  if (progress.stage === "verify") return "Verifying model download";
+  if (progress.stage === "cache") return "Model cached locally";
+  return "Downloading model";
+}
+
 function renderGenerationInput(tokenizer: PreTrainedTokenizer, input: PreparedGenerationInput) {
-  if (typeof input === "string") return input;
   const rendered = tokenizer.apply_chat_template(input, { tokenize: false, add_generation_prompt: true });
   if (typeof rendered !== "string") throw new Error("The model chat template did not return text.");
   return rendered;
@@ -225,14 +244,13 @@ function renderGenerationInput(tokenizer: PreTrainedTokenizer, input: PreparedGe
 
 function fitMessagesToContext(
   tokenizer: PreTrainedTokenizer,
-  family: ModelManifest["family"],
   messages: readonly ChatTurn[],
   maxInputTokens: number | null
 ) {
   const fitted = [...messages];
   if (maxInputTokens === null) return fitted;
   while (fitted.length > 1) {
-    const rendered = renderGenerationInput(tokenizer, prepareGenerationInput(family, fitted));
+    const rendered = renderGenerationInput(tokenizer, prepareGenerationInput(fitted));
     if (tokenizer.encode(rendered, { add_special_tokens: false }).length <= maxInputTokens) break;
     const removableIndex = fitted[0]?.role === "system" && fitted.length > 2 ? 1 : 0;
     const removePair = fitted[removableIndex]?.role === "user" && fitted[removableIndex + 1]?.role === "assistant";
@@ -328,12 +346,6 @@ function decodeTokens(tokenizer: PreTrainedTokenizer, tokenIds: readonly number[
     clean_up_tokenization_spaces: false,
     skip_special_tokens: false
   }));
-}
-
-function roleLabel(role: ChatTurn["role"]) {
-  if (role === "system") return "System";
-  if (role === "user") return "User";
-  return "Assistant";
 }
 
 function formatRate(tokensPerSecond: number | null) {

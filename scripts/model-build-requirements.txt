@@ -1,0 +1,8 @@
+huggingface-hub==1.24.0
+hf-xet==1.5.2
+ml_dtypes==0.5.4
+numpy==2.5.1
+onnx==1.22.0
+packaging==26.2
+protobuf==7.35.1
+onnx-ir @ git+https://github.com/onnx/ir-py.git@32283c3dcae562b742adf119e943785ee12d1426

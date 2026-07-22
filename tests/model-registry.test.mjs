@@ -1,78 +1,64 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
-import { readdirSync, readFileSync, statSync } from "node:fs";
 import test from "node:test";
-import { dirname, join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
-import nextConfig from "../next.config.mjs";
-import { DEFAULT_ONNX_MODEL, MODEL_REGISTRY, requireModelDefinition, resolveModelProvider } from "../src/lib/onnx-models.ts";
+import { MODEL_REGISTRY, requireModelDefinition, resolveModelProvider } from "../src/lib/onnx-models.ts";
 
-const repositoryRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-const bundledModelRoot = join(repositoryRoot, "public/models/sshleifer-tiny-gpt2-trace");
-
-test("keeps the bundled manifest aligned with the cached-decoder config", () => {
-  assert.equal(DEFAULT_ONNX_MODEL.id, "tiny-gpt2");
-  const config = JSON.parse(readFileSync(join(bundledModelRoot, "config.json"), "utf8"));
-  assert.equal(config.use_cache, true);
-  assert.equal(DEFAULT_ONNX_MODEL.format.contextLength, config.n_positions);
-  assert.ok(statSync(join(bundledModelRoot, "generation_config.json")).size > 0);
-});
-
-test("keeps the bundled size and content-addressed route aligned with tracked artifacts", async () => {
-  const files = listFiles(bundledModelRoot);
-  const sizeBytes = files.reduce((total, file) => total + statSync(file).size, 0);
-  const hash = createHash("sha256");
-  for (const file of files) {
-    hash.update(relative(bundledModelRoot, file));
-    hash.update("\0");
-    hash.update(readFileSync(file));
-    hash.update("\0");
+const EXPECTED_MODELS = [
+  {
+    id: "tiny-aya-global",
+    repo: "onnx-community/tiny-aya-global-ONNX",
+    revision: "7fff1be9627e40f0d89c33f406882bdafb56ec90",
+    sizeBytes: 2_354_413_407
+  },
+  {
+    id: "tiny-aya-earth",
+    repo: "onnx-community/tiny-aya-earth-ONNX",
+    revision: "24a24ee8b8483762575fe734e57bad21ca36d8c6",
+    sizeBytes: 2_354_413_397
+  },
+  {
+    id: "tiny-aya-fire",
+    repo: "onnx-community/tiny-aya-fire-ONNX",
+    revision: "70f6b7edf79955855d7939342d2a39ab644d3ed6",
+    sizeBytes: 2_354_413_397
+  },
+  {
+    id: "tiny-aya-water",
+    repo: "onnx-community/tiny-aya-water-ONNX",
+    revision: "e1109b664b476b709d13bf40dc105efb147caa09",
+    sizeBytes: 2_354_413_397
   }
-  const version = `v-${hash.digest("hex").slice(0, 12)}`;
+];
 
-  assert.equal(DEFAULT_ONNX_MODEL.format.sizeBytes, sizeBytes);
-  assert.equal(DEFAULT_ONNX_MODEL.format.sizeLabel, `${(sizeBytes / 1_000_000).toFixed(1)} MB`);
-  assert.ok(DEFAULT_ONNX_MODEL.source.kind === "local");
-  assert.ok(DEFAULT_ONNX_MODEL.source.baseUrl.startsWith(`/models/${version}/`));
+test("catalogs only the four pinned Tiny Aya regional models", () => {
+  assert.equal(MODEL_REGISTRY[0].id, "tiny-aya-global");
+  assert.deepEqual(MODEL_REGISTRY.map(({ id }) => id), EXPECTED_MODELS.map(({ id }) => id));
 
-  const rewrites = await nextConfig.rewrites();
-  assert.ok(rewrites.some((rewrite) => rewrite.source.startsWith(`/models/${version}/`)));
-  const headers = await nextConfig.headers();
-  const cacheRule = headers.find((rule) => rule.source === `/models/${version}/:path*`);
-  assert.match(cacheRule?.headers[0]?.value ?? "", /max-age=31536000, immutable/);
+  for (const expected of EXPECTED_MODELS) {
+    const model = requireModelDefinition(expected.id);
+    assert.equal(model.family, "cohere");
+    assert.equal(model.verification, "experimental");
+    assert.equal(model.source.kind, "huggingface");
+    assert.equal(model.source.repo, expected.repo);
+    assert.equal(model.source.revision, expected.revision);
+    assert.match(model.source.revision, /^[a-f0-9]{40}$/);
+    assert.deepEqual(model.providers, ["webgpu"]);
+    assert.equal(model.format.quantization, "q4f16");
+    assert.equal(model.format.sizeLabel, "~2.35 GB");
+    assert.equal(model.format.sizeBytes, expected.sizeBytes);
+    assert.equal(model.format.contextLength, 8192);
+    assert.match(model.label, /non-commercial/i);
+    assert.match(model.description, /CC BY-NC 4\.0/i);
+    assert.match(model.description, /Cohere Labs AUP/i);
+  }
 });
 
 test("rejects unknown model identifiers at runtime boundaries", () => {
   assert.throws(() => requireModelDefinition("not-a-model"), /Unknown model identifier/);
 });
 
-test("pins remote model sources to immutable commit revisions", () => {
-  const remoteModels = MODEL_REGISTRY.filter((model) => model.source.kind === "huggingface");
-  assert.ok(remoteModels.length > 0);
-  for (const model of remoteModels) assert.match(model.source.revision, /^[a-f0-9]{40}$/);
+test("requires WebGPU for every Tiny Aya model", () => {
+  for (const model of MODEL_REGISTRY) {
+    assert.equal(resolveModelProvider(model, { webgpu: true, wasm: true }), "webgpu");
+    assert.equal(resolveModelProvider(model, { webgpu: false, wasm: true }), null);
+  }
 });
-
-test("catalogs Tiny Aya as an explicit non-commercial WebGPU model", () => {
-  const model = requireModelDefinition("tiny-aya-global");
-  assert.equal(model.verification, "experimental");
-  assert.equal(model.source.kind, "huggingface");
-  assert.deepEqual(model.providers, ["webgpu"]);
-  assert.equal(model.format.quantization, "q4f16");
-  assert.equal(model.format.sizeLabel, "~2.35 GB");
-  assert.equal(model.format.sizeBytes, 2_354_413_407);
-  assert.equal(model.format.contextLength, 8192);
-  assert.match(model.label, /non-commercial/i);
-  assert.match(model.description, /Cohere Labs AUP/i);
-});
-
-test("resolves the fastest compatible provider from one pure policy", () => {
-  assert.equal(resolveModelProvider(DEFAULT_ONNX_MODEL, { webgpu: true, wasm: true }), "wasm");
-  assert.equal(resolveModelProvider(DEFAULT_ONNX_MODEL, { webgpu: false, wasm: true }), "wasm");
-  assert.equal(resolveModelProvider(MODEL_REGISTRY[1], { webgpu: false, wasm: true }), "wasm");
-});
-
-function listFiles(directory) {
-  return readdirSync(directory, { withFileTypes: true })
-    .flatMap((entry) => entry.isDirectory() ? listFiles(join(directory, entry.name)) : [join(directory, entry.name)])
-    .sort();
-}

@@ -1,14 +1,14 @@
 "use client";
 
 import { type FormEvent, type KeyboardEvent, useEffect, useRef, useState } from "react";
-import { Check, CircleUserRound, Copy, LoaderCircle, Pencil, Plus, RotateCcw, SendHorizontal, Square } from "lucide-react";
-import { SophonModelSelector } from "@/components/sophon-model-selector";
+import { Check, CircleUserRound, Copy, LoaderCircle, PanelLeft, Pencil, Plus, RotateCcw, SendHorizontal, Square } from "lucide-react";
+import { SophonModelSidebar } from "@/components/sophon-model-sidebar";
 import { InspectableMessage, type InspectableToken } from "@/components/token-lens";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Button } from "@/components/ui/button";
 import { Message, MessageAvatar, MessageContent } from "@/components/ui/message";
 import { cancelGeneration, getCapabilities, preloadModel, runPrompt, terminateRuntimeWorker } from "@/lib/interp-client";
-import { DEFAULT_ONNX_MODEL, MODEL_REGISTRY, resolveModelProvider, type ModelManifest } from "@/lib/onnx-models";
+import { MODEL_REGISTRY, resolveModelProvider, type ModelManifest } from "@/lib/onnx-models";
 import type { GenerationTelemetryEvent, OnnxLogEvent, RuntimeCapabilities } from "@/lib/onnx-types";
 import { cn } from "@/lib/utils";
 
@@ -40,8 +40,8 @@ const STARTER_MESSAGES: ChatMessage[] = [
   {
     id: "assistant-welcome",
     role: "assistant",
-    content: "Hi — I’m Sophon. Your prompts run in this browser. Tiny GPT-2 is a verified completion baseline; choose an instruct model for conversational tasks.",
-    meta: "Local by design · no server inference"
+    content: "Hi — I’m Sophon. Choose a Tiny Aya model to download, then your prompts will run privately in this browser.",
+    meta: "Cohere open weights · local by design · no server inference"
   }
 ];
 
@@ -53,9 +53,11 @@ export function SophonWorkbench() {
   const [failedTurn, setFailedTurn] = useState<FailedTurn | null>(null);
   const [loadedModelId, setLoadedModelId] = useState<string | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
-  const [modelId, setModelId] = useState<string>(DEFAULT_ONNX_MODEL.id);
+  const [modelId, setModelId] = useState("");
+  const [modelSidebarOpen, setModelSidebarOpen] = useState(false);
   const [capabilities, setCapabilities] = useState<RuntimeCapabilities | null>(null);
   const [browserStorage, setBrowserStorage] = useState<BrowserStorage | null>();
+  const [storageRevision, setStorageRevision] = useState(0);
   const generationIdRef = useRef(0);
   const messageEndRef = useRef<HTMLDivElement>(null);
   const promptRef = useRef<HTMLTextAreaElement>(null);
@@ -65,11 +67,12 @@ export function SophonWorkbench() {
   const isModelLoading = generation.status === "loading" || runtimeActivity?.phase === "download";
   const downloadProgress = isModelLoading ? runtimeActivity?.progress : undefined;
   const downloadPercent = downloadProgress ? Math.floor(downloadProgress.loaded / downloadProgress.total * 100) : undefined;
-  const selectedModel = MODEL_REGISTRY.find((model) => model.id === modelId) ?? DEFAULT_ONNX_MODEL;
+  const downloadStatus = getDownloadStageLabel(downloadProgress?.stage, true);
+  const selectedModel = MODEL_REGISTRY.find((model) => model.id === modelId) ?? null;
   const modelCompatibility = getModelCompatibility(capabilities, selectedModel);
   const runtimeStatus = getRuntimeStatus(capabilities, selectedModel, loadedModelId, runtimeActivity);
   const storageLabel = browserStorage === undefined ? "Checking…" : browserStorage === null ? "Unavailable" : `${formatStorageBytes(browserStorage.usage)} / ${formatStorageBytes(browserStorage.quota)} · ${browserStorage.persistent ? "Persistent" : "Best effort"}`;
-  const canSend = prompt.trim().length > 0 && !isBusy && modelCompatibility === "compatible";
+  const canSend = selectedModel !== null && prompt.trim().length > 0 && !isBusy && modelCompatibility === "compatible";
 
   useEffect(() => {
     let active = true;
@@ -93,10 +96,10 @@ export function SophonWorkbench() {
       .then(([storage, persistent]) => { if (active) setBrowserStorage(storage ? { ...storage, persistent } : null); })
       .catch(() => { if (active) setBrowserStorage(null); });
     return () => { active = false; };
-  }, [loadedModelId]);
+  }, [storageRevision]);
 
   useEffect(() => {
-    if (!capabilities || !resolveModelProvider(selectedModel, capabilities)) return;
+    if (!selectedModel || !capabilities || !resolveModelProvider(selectedModel, capabilities)) return;
     const loadId = generationIdRef.current += 1;
     queueMicrotask(() => {
       if (generationIdRef.current === loadId) setGeneration({ status: "loading", activity: { detail: `${selectedModel.label} · ${selectedModel.format.sizeLabel}`, label: "Preparing local model", phase: "runtime" } });
@@ -108,7 +111,10 @@ export function SophonWorkbench() {
     }).catch((caught) => {
       if (generationIdRef.current === loadId) setError(caught instanceof Error ? caught.message : `${selectedModel.label} could not load.`);
     }).finally(() => {
-      if (generationIdRef.current === loadId) setGeneration({ status: "idle" });
+      if (generationIdRef.current === loadId) {
+        setGeneration({ status: "idle" });
+        setStorageRevision((value) => value + 1);
+      }
     });
     return () => {
       if (generationIdRef.current === loadId) generationIdRef.current += 1;
@@ -141,6 +147,9 @@ export function SophonWorkbench() {
 
   function selectModel(nextModelId: string) {
     if (nextModelId === modelId) return;
+    void navigator.storage?.persist?.()
+      .then(() => setStorageRevision((value) => value + 1))
+      .catch(() => undefined);
     generationIdRef.current += 1;
     terminateRuntimeWorker();
     setModelId(nextModelId);
@@ -163,6 +172,11 @@ export function SophonWorkbench() {
     const text = prompt.trim();
     if (!text || isBusy) return;
 
+    if (!selectedModel) {
+      setError("Choose a Tiny Aya model before sending a message.");
+      return;
+    }
+
     if (modelCompatibility !== "compatible") {
       setError(modelCompatibility === "probing"
         ? "Sophon is still checking this browser's local runtime."
@@ -177,21 +191,23 @@ export function SophonWorkbench() {
     setError(null);
     setFailedTurn(null);
     setMessages(nextMessages);
-    await runGeneration({ conversation: nextMessages, generationId, text, userMessageId });
+    await runGeneration({ conversation: nextMessages, generationId, model: selectedModel, text, userMessageId });
   }
 
-  async function runGeneration({ conversation, generationId, text, userMessageId }: {
+  async function runGeneration({ conversation, generationId, model, text, userMessageId }: {
     conversation: ChatMessage[];
     generationId: number;
+    model: ModelManifest;
     text: string;
     userMessageId: string;
   }) {
+    const activeModelId = model.id;
     setGeneration({
       status: "running",
       turn: { messageId: userMessageId, text },
       activity: {
-        detail: loadedModelId === modelId ? "Preparing the conversation context" : `${selectedModel.label} · ${selectedModel.format.sizeLabel}`,
-        label: loadedModelId === modelId ? "Preparing context" : "Preparing local model",
+        detail: loadedModelId === activeModelId ? "Preparing the conversation context" : `${model.label} · ${model.format.sizeLabel}`,
+        label: loadedModelId === activeModelId ? "Preparing context" : "Preparing local model",
         phase: "runtime"
       }
     });
@@ -202,7 +218,7 @@ export function SophonWorkbench() {
 
     try {
       const response = await runPrompt(turns, {
-        modelId,
+        modelId: activeModelId,
         maxNewTokens: 48,
         onLog: (event) => updateRuntimeFromLog(generationId, event),
         onTelemetry: (telemetry) => updateRuntimeFromTelemetry(generationId, telemetry),
@@ -219,7 +235,7 @@ export function SophonWorkbench() {
       const conversationWithTokens = conversation.map((message) => message.id === userMessageId
         ? { ...message, tokens: response.result.inputTokens }
         : message);
-      setLoadedModelId(modelId);
+      setLoadedModelId(activeModelId);
       if (!response.result.generatedText.trim()) {
         const reason = "The model completed without returning visible text.";
         setMessages(conversationWithTokens);
@@ -274,11 +290,11 @@ export function SophonWorkbench() {
   }
 
   function retryFailedTurn() {
-    if (!failedTurn || isBusy || modelCompatibility !== "compatible") return;
+    if (!failedTurn || !selectedModel || isBusy || modelCompatibility !== "compatible") return;
     const generationId = generationIdRef.current += 1;
     setError(null);
     setFailedTurn(null);
-    void runGeneration({ conversation: messages, generationId, text: failedTurn.text, userMessageId: failedTurn.messageId });
+    void runGeneration({ conversation: messages, generationId, model: selectedModel, text: failedTurn.text, userMessageId: failedTurn.messageId });
   }
 
   function editFailedTurn() {
@@ -301,7 +317,7 @@ export function SophonWorkbench() {
   }
 
   function regenerateLatest(assistantIndex: number) {
-    if (isBusy || modelCompatibility !== "compatible") return;
+    if (!selectedModel || isBusy || modelCompatibility !== "compatible") return;
     const userIndex = messages.slice(0, assistantIndex).findLastIndex((message) => message.role === "user");
     const userMessage = messages[userIndex];
     if (!userMessage) return;
@@ -310,7 +326,7 @@ export function SophonWorkbench() {
     setMessages(conversation);
     setError(null);
     setFailedTurn(null);
-    void runGeneration({ conversation, generationId, text: userMessage.content, userMessageId: userMessage.id });
+    void runGeneration({ conversation, generationId, model: selectedModel, text: userMessage.content, userMessageId: userMessage.id });
   }
 
   async function copyMessage(message: ChatMessage) {
@@ -351,15 +367,16 @@ export function SophonWorkbench() {
             <Button aria-label="New session" className="hidden rounded-xl sm:inline-flex" disabled={isBusy} onClick={resetChat} size="sm" type="button" variant="sophon">
               <Plus aria-hidden="true" /> New session
             </Button>
-            <SophonModelSelector capabilities={capabilities} disabled={isRunning} loading={generation.status === "loading"} modelId={modelId} onSelect={selectModel} />
+            <Button aria-controls="model-library-mobile" aria-expanded={modelSidebarOpen} aria-label="Open model library" className="h-11 rounded-xl md:hidden" onClick={() => setModelSidebarOpen(true)} size="sm" type="button" variant="sophon"><PanelLeft aria-hidden="true" /> Models</Button>
           </div>
-          {isModelLoading ? <span aria-label={`Loading ${selectedModel.label}`} aria-valuemax={100} aria-valuemin={0} aria-valuenow={downloadPercent} aria-valuetext={downloadProgress ? `${formatStorageBytes(downloadProgress.loaded)} of ${formatStorageBytes(downloadProgress.total)} loaded` : "Preparing model download"} className="absolute inset-x-0 bottom-0 h-1 overflow-hidden bg-white/10" role="progressbar"><span className={cn("block h-full bg-gradient-to-r from-sophon-signal to-sophon-signal-bright shadow-[0_0_12px_var(--sophon-signal-bright)] transition-[width] duration-200 motion-reduce:transition-none", downloadPercent === undefined && "w-1/3 animate-pulse motion-reduce:animate-none")} style={downloadPercent === undefined ? undefined : { width: `${downloadPercent}%` }} /></span> : null}
+          {isModelLoading && selectedModel ? <span aria-label={`Loading ${selectedModel.label}`} aria-valuemax={100} aria-valuemin={0} aria-valuenow={downloadPercent} aria-valuetext={downloadProgress ? formatDownloadAriaText(downloadProgress) : "Preparing model download"} className="absolute inset-x-0 bottom-0 h-1 overflow-hidden bg-white/10" role="progressbar"><span className={cn("block h-full bg-gradient-to-r from-sophon-signal to-sophon-signal-bright shadow-[0_0_12px_var(--sophon-signal-bright)] transition-[width] duration-200 motion-reduce:transition-none", downloadPercent === undefined && "w-1/3 animate-pulse motion-reduce:animate-none")} style={downloadPercent === undefined ? undefined : { width: `${downloadPercent}%` }} /></span> : null}
         </header>
 
         <div aria-atomic="true" aria-live="polite" className="sr-only" role="status">{runtimeActivity?.label ?? ""}</div>
 
-        <div className="min-h-0 flex-1">
-          <section aria-busy={isBusy} aria-label="Conversation" className="relative flex h-full min-h-0 min-w-0 flex-col">
+        <div className="flex min-h-0 flex-1">
+          <SophonModelSidebar capabilities={capabilities} disabled={isRunning} downloadPercent={downloadPercent} loadedModelId={loadedModelId} loading={isModelLoading} loadingLabel={downloadStatus} mobileOpen={modelSidebarOpen} modelId={modelId} onMobileOpenChange={setModelSidebarOpen} onSelect={selectModel} />
+          <section aria-busy={isBusy} aria-label="Conversation" className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col">
             <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
               <div className="mx-auto flex min-w-0 w-full max-w-6xl flex-col px-4 py-6 sm:px-12 sm:py-9">
                 <div aria-live={isRunning ? "off" : "polite"} aria-relevant="additions text" className="min-w-0 space-y-6" role="log">
@@ -430,7 +447,9 @@ export function SophonWorkbench() {
                     value={prompt}
                   />
                   <div className="flex items-center justify-between border-t border-white/[.1] bg-black/10 px-3 py-2">
-                    <span className="truncate pr-3 font-mono text-[10px] uppercase tracking-widest text-white/60">{selectedModel.family} · {selectedModel.format.quantization} · {selectedModel.format.sizeLabel}</span>
+                    <span className="truncate pr-3 font-mono text-[10px] uppercase tracking-widest text-white/60">
+                      {selectedModel ? `${selectedModel.family} · ${selectedModel.format.quantization} · ${selectedModel.format.sizeLabel}` : "Select a Tiny Aya model to download"}
+                    </span>
                     {isRunning ? (
                       <Button aria-label="Stop generation" className="h-10 shrink-0 rounded-xl" onClick={stopGeneration} size="sm" type="button" variant="sophon">
                         <Square aria-hidden="true" className="size-3 fill-current" /> Stop
@@ -444,7 +463,7 @@ export function SophonWorkbench() {
                 </div>
                 <div className="mt-3 flex justify-between gap-4 px-1 font-mono text-[10px] uppercase tracking-wider text-white/60" id="prompt-help">
                   <span className={cn(modelCompatibility === "incompatible" && "text-destructive")}>
-                    {modelCompatibility === "probing" ? "Checking local runtime…" : modelCompatibility === "incompatible" ? "Selected model is unavailable in this browser" : <><span className="min-[360px]:hidden">Enter to send</span><span className="hidden min-[360px]:inline">Enter to send · Shift+Enter for a new line</span></>}
+                    {modelCompatibility === "unselected" ? "Choose a model to begin" : modelCompatibility === "probing" ? "Checking local runtime…" : modelCompatibility === "incompatible" ? "Selected model is unavailable in this browser" : <><span className="min-[360px]:hidden">Enter to send</span><span className="hidden min-[360px]:inline">Enter to send · Shift+Enter for a new line</span></>}
                   </span>
                   <span className="shrink-0 tabular-nums">{prompt.length} chars</span>
                 </div>
@@ -495,19 +514,23 @@ function MessageActions({ canEdit, canRegenerate, copied, onCopy, onEdit, onRege
   );
 }
 
-function getModelCompatibility(capabilities: RuntimeCapabilities | null, model: ModelManifest) {
+function getModelCompatibility(capabilities: RuntimeCapabilities | null, model: ModelManifest | null) {
+  if (!model) return "unselected" as const;
   if (!capabilities) return "probing" as const;
   return resolveModelProvider(model, capabilities) ? "compatible" as const : "incompatible" as const;
 }
 
 function getRuntimeStatus(
   capabilities: RuntimeCapabilities | null,
-  model: ModelManifest,
+  model: ModelManifest | null,
   loadedModelId: string | null,
   activity: RuntimeActivity | null
 ) {
   if (activity) {
     return { label: activity.label, className: "text-[#dbe7ff]", dotClassName: "bg-sophon-signal-soft shadow-[0_0_10px_var(--sophon-signal-soft)]" };
+  }
+  if (!model) {
+    return { label: "Select model", className: "text-white/70", dotClassName: "bg-sophon-warning shadow-[0_0_10px_var(--sophon-warning)]" };
   }
   if (!capabilities) {
     return { label: "Checking runtime", className: "text-white/70", dotClassName: "animate-pulse bg-white/60 motion-reduce:animate-none" };
@@ -530,13 +553,42 @@ function activityFromLog(event: OnnxLogEvent): RuntimeActivity {
         ? "decode"
         : "runtime";
   const label = phase === "download"
-    ? "Downloading model"
+    ? getDownloadStageLabel(event.progress?.stage)
     : phase === "tokenize"
       ? "Tokenizing context"
       : phase === "decode"
         ? "Running local inference"
         : event.message || "Initializing runtime";
-  return { detail: event.progress ? `${formatStorageBytes(event.progress.loaded)} / ${formatStorageBytes(event.progress.total)}` : event.detail, label, phase, progress: event.progress };
+  return { detail: event.progress ? formatDownloadDetail(event.progress) : event.detail, label, phase, progress: event.progress };
+}
+
+function getDownloadStageLabel(stage?: NonNullable<OnnxLogEvent["progress"]>["stage"], compact = false) {
+  if (stage === "resume") return compact ? "Resuming" : "Resuming model";
+  if (stage === "verify") return compact ? "Verifying" : "Verifying model";
+  if (stage === "cache") return "Loading cached model";
+  return compact ? "Downloading" : "Downloading model";
+}
+
+function formatDownloadDetail(progress: NonNullable<OnnxLogEvent["progress"]>) {
+  const parts = [`${formatStorageBytes(progress.loaded)} / ${formatStorageBytes(progress.total)}`];
+  if (progress.resumedBytes) parts.push(`${formatStorageBytes(progress.resumedBytes)} resumed`);
+  if (progress.networkBytes !== undefined) parts.push(`${formatStorageBytes(progress.networkBytes)} transferred`);
+  if (progress.bytesPerSecond !== undefined) parts.push(`${formatStorageBytes(progress.bytesPerSecond)}/s`);
+  if (progress.etaMs !== undefined) parts.push(`${formatEta(progress.etaMs)} left`);
+  return parts.join(" · ");
+}
+
+function formatDownloadAriaText(progress: NonNullable<OnnxLogEvent["progress"]>) {
+  const stage = progress.stage === "verify" ? "verified" : progress.stage === "cache" ? "loaded from cache" : "loaded";
+  const resumed = progress.resumedBytes ? `, including ${formatStorageBytes(progress.resumedBytes)} resumed` : "";
+  return `${formatStorageBytes(progress.loaded)} of ${formatStorageBytes(progress.total)} ${stage}${resumed}`;
+}
+
+function formatEta(milliseconds: number) {
+  const seconds = Math.max(0, Math.ceil(milliseconds / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.ceil(seconds / 60);
+  return minutes < 60 ? `${minutes}m` : `${Math.ceil(minutes / 60)}h`;
 }
 
 function activityFromTelemetry(telemetry: GenerationTelemetryEvent): RuntimeActivity {
