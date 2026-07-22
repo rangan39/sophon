@@ -11,6 +11,7 @@ const securityHeaders = [
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  devIndicators: false,
   output: "standalone",
   outputFileTracingRoot: rootDir,
   poweredByHeader: false,

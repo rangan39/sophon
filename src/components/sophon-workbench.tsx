@@ -1,15 +1,25 @@
 "use client";
 
 import { type FormEvent, type KeyboardEvent, useEffect, useRef, useState } from "react";
-import { Check, CircleUserRound, Copy, LoaderCircle, PanelLeft, Pencil, Plus, RotateCcw, SendHorizontal, Square } from "lucide-react";
+import { Check, CircleUserRound, Copy, LoaderCircle, PanelLeft, Pencil, RotateCcw, SendHorizontal, Square, Trash2 } from "lucide-react";
 import { SophonModelSidebar } from "@/components/sophon-model-sidebar";
 import { InspectableMessage, type InspectableToken } from "@/components/token-lens";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Button } from "@/components/ui/button";
+import { InfoHint } from "@/components/ui/info-hint";
 import { Message, MessageAvatar, MessageContent } from "@/components/ui/message";
-import { cancelGeneration, getCapabilities, preloadModel, runPrompt, terminateRuntimeWorker } from "@/lib/interp-client";
+import {
+  cancelGeneration,
+  cancelModelPreload,
+  deleteCachedModel,
+  getCachedModels,
+  getCapabilities,
+  preloadModel,
+  runPrompt,
+  terminateRuntimeWorker
+} from "@/lib/interp-client";
 import { MODEL_REGISTRY, resolveModelProvider, type ModelManifest } from "@/lib/onnx-models";
-import type { GenerationTelemetryEvent, OnnxLogEvent, RuntimeCapabilities } from "@/lib/onnx-types";
+import type { GenerationTelemetryEvent, ModelCacheSummary, OnnxLogEvent, RuntimeCapabilities } from "@/lib/onnx-types";
 import { cn } from "@/lib/utils";
 
 type ChatMessage = {
@@ -57,6 +67,8 @@ export function SophonWorkbench() {
   const [modelSidebarOpen, setModelSidebarOpen] = useState(false);
   const [capabilities, setCapabilities] = useState<RuntimeCapabilities | null>(null);
   const [browserStorage, setBrowserStorage] = useState<BrowserStorage | null>();
+  const [cacheSummaries, setCacheSummaries] = useState<ModelCacheSummary[]>([]);
+  const [deletingModelId, setDeletingModelId] = useState<string | null>(null);
   const [storageRevision, setStorageRevision] = useState(0);
   const generationIdRef = useRef(0);
   const messageEndRef = useRef<HTMLDivElement>(null);
@@ -73,6 +85,7 @@ export function SophonWorkbench() {
   const runtimeStatus = getRuntimeStatus(capabilities, selectedModel, loadedModelId, runtimeActivity);
   const storageLabel = browserStorage === undefined ? "Checking…" : browserStorage === null ? "Unavailable" : `${formatStorageBytes(browserStorage.usage)} / ${formatStorageBytes(browserStorage.quota)} · ${browserStorage.persistent ? "Persistent" : "Best effort"}`;
   const canSend = selectedModel !== null && prompt.trim().length > 0 && !isBusy && modelCompatibility === "compatible";
+  const canResetConversation = messages.length > STARTER_MESSAGES.length || prompt.length > 0 || error !== null || failedTurn !== null;
 
   useEffect(() => {
     let active = true;
@@ -99,6 +112,14 @@ export function SophonWorkbench() {
   }, [storageRevision]);
 
   useEffect(() => {
+    let active = true;
+    void getCachedModels()
+      .then((models) => { if (active) setCacheSummaries(models); })
+      .catch(() => { if (active) setCacheSummaries([]); });
+    return () => { active = false; };
+  }, [storageRevision]);
+
+  useEffect(() => {
     if (!selectedModel || !capabilities || !resolveModelProvider(selectedModel, capabilities)) return;
     const loadId = generationIdRef.current += 1;
     queueMicrotask(() => {
@@ -118,7 +139,7 @@ export function SophonWorkbench() {
     });
     return () => {
       if (generationIdRef.current === loadId) generationIdRef.current += 1;
-      terminateRuntimeWorker();
+      void cancelModelPreload().catch(() => terminateRuntimeWorker());
     };
   }, [capabilities, selectedModel]);
 
@@ -132,7 +153,7 @@ export function SophonWorkbench() {
     terminateRuntimeWorker();
   }, []);
 
-  function resetChat() {
+  function resetConversation() {
     generationIdRef.current += 1;
     if (isRunning) {
       void cancelGeneration().catch(() => terminateRuntimeWorker());
@@ -148,15 +169,51 @@ export function SophonWorkbench() {
   function selectModel(nextModelId: string) {
     if (nextModelId === modelId) return;
     void navigator.storage?.persist?.()
-      .then(() => setStorageRevision((value) => value + 1))
+      .then((persistent) => setBrowserStorage((current) => current ? { ...current, persistent } : current))
       .catch(() => undefined);
     generationIdRef.current += 1;
-    terminateRuntimeWorker();
+    void cancelModelPreload().catch(() => terminateRuntimeWorker());
     setModelId(nextModelId);
     setLoadedModelId(null);
     setError(null);
     setFailedTurn(null);
     setGeneration({ status: "idle" });
+  }
+
+  function cancelDownload() {
+    const pausedModel = selectedModel;
+    generationIdRef.current += 1;
+    void cancelModelPreload().catch(() => terminateRuntimeWorker());
+    setModelId("");
+    setLoadedModelId(null);
+    setGeneration({ status: "idle" });
+    setFailedTurn(null);
+    setError(pausedModel ? `${pausedModel.label} download paused. Verified chunks were kept and will resume when you select it again.` : "Model download paused.");
+    setStorageRevision((value) => value + 1);
+  }
+
+  async function deleteModelDownload(targetModelId: string) {
+    const target = MODEL_REGISTRY.find((model) => model.id === targetModelId);
+    if (!target || !window.confirm(`Delete Sophon's downloaded ${target.label} files from this browser?`)) return;
+    setDeletingModelId(targetModelId);
+    setError(null);
+    if (targetModelId === modelId) {
+      generationIdRef.current += 1;
+      await cancelModelPreload().catch(() => terminateRuntimeWorker());
+      setModelId("");
+      setLoadedModelId(null);
+      setGeneration({ status: "idle" });
+    }
+    try {
+      await deleteCachedModel(targetModelId);
+      const next = await getCachedModels();
+      setCacheSummaries(next);
+      setStorageRevision((value) => value + 1);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : `${target.label} could not be deleted.`);
+    } finally {
+      setDeletingModelId(null);
+    }
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -179,8 +236,8 @@ export function SophonWorkbench() {
 
     if (modelCompatibility !== "compatible") {
       setError(modelCompatibility === "probing"
-        ? "Sophon is still checking this browser's local runtime."
-        : `${selectedModel.label} is not compatible with an available provider in this browser.`);
+        ? "Sophon is still checking this browser's GPU support."
+        : `${selectedModel.label} needs browser GPU support, which is unavailable in this browser.`);
       return;
     }
 
@@ -250,7 +307,7 @@ export function SophonWorkbench() {
           role: "assistant",
           content: response.result.generatedText,
           tokens: response.result.generatedTokens,
-          meta: `${metrics.provider} · ${metrics.contextTokenCount}${metrics.truncatedInputTokens ? `/${metrics.promptTokenCount}` : ""}→${response.result.outputTokenCount} tok · ${formatRate(metrics.decodeTokensPerSecond)} · ${formatDuration(metrics.ttftMs)} TTFT${metrics.truncatedInputTokens ? ` · ${metrics.truncatedInputTokens} earlier tok omitted` : ""}`
+          meta: `${formatProvider(metrics.provider)} · ${metrics.contextTokenCount}${metrics.truncatedInputTokens ? `/${metrics.promptTokenCount}` : ""}→${response.result.outputTokenCount} tokens · ${formatRate(metrics.decodeTokensPerSecond)} · ${formatDuration(metrics.ttftMs)} TTFT${metrics.truncatedInputTokens ? ` · ${metrics.truncatedInputTokens} earlier tokens omitted` : ""}`
         }
       ]);
     } catch (caught) {
@@ -364,8 +421,9 @@ export function SophonWorkbench() {
               <span aria-hidden="true" className={cn("size-1.5 rounded-full", runtimeStatus.dotClassName)} />
               {runtimeStatus.label}{downloadPercent === undefined ? null : ` · ${downloadPercent}%`}
             </div>
-            <Button aria-label="New session" className="hidden rounded-xl sm:inline-flex" disabled={isBusy} onClick={resetChat} size="sm" type="button" variant="sophon">
-              <Plus aria-hidden="true" /> New session
+            {generation.status === "loading" ? <Button aria-label="Pause model download" className="h-11 rounded-xl sm:h-9" onClick={cancelDownload} size="sm" title="Pause model download" type="button" variant="sophon"><Square aria-hidden="true" className="size-3 fill-current" /><span className="hidden sm:inline">Pause</span></Button> : null}
+            <Button aria-label="Reset conversation" className="size-11 rounded-xl text-white/70 hover:text-sophon-signal-bright sm:size-9" disabled={isBusy || !canResetConversation} onClick={resetConversation} size="icon" title="Reset conversation" type="button" variant="sophon">
+              <Trash2 aria-hidden="true" />
             </Button>
             <Button aria-controls="model-library-mobile" aria-expanded={modelSidebarOpen} aria-label="Open model library" className="h-11 rounded-xl md:hidden" onClick={() => setModelSidebarOpen(true)} size="sm" type="button" variant="sophon"><PanelLeft aria-hidden="true" /> Models</Button>
           </div>
@@ -375,7 +433,7 @@ export function SophonWorkbench() {
         <div aria-atomic="true" aria-live="polite" className="sr-only" role="status">{runtimeActivity?.label ?? ""}</div>
 
         <div className="flex min-h-0 flex-1">
-          <SophonModelSidebar capabilities={capabilities} disabled={isRunning} downloadPercent={downloadPercent} loadedModelId={loadedModelId} loading={isModelLoading} loadingLabel={downloadStatus} mobileOpen={modelSidebarOpen} modelId={modelId} onMobileOpenChange={setModelSidebarOpen} onSelect={selectModel} />
+          <SophonModelSidebar cacheSummaries={cacheSummaries} capabilities={capabilities} deletingModelId={deletingModelId} disabled={isRunning} downloadPercent={downloadPercent} loadedModelId={loadedModelId} loading={isModelLoading} loadingLabel={downloadStatus} mobileOpen={modelSidebarOpen} modelId={modelId} onDelete={(targetModelId) => void deleteModelDownload(targetModelId)} onMobileOpenChange={setModelSidebarOpen} onSelect={selectModel} />
           <section aria-busy={isBusy} aria-label="Conversation" className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col">
             <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
               <div className="mx-auto flex min-w-0 w-full max-w-6xl flex-col px-4 py-6 sm:px-12 sm:py-9">
@@ -448,7 +506,7 @@ export function SophonWorkbench() {
                   />
                   <div className="flex items-center justify-between border-t border-white/[.1] bg-black/10 px-3 py-2">
                     <span className="truncate pr-3 font-mono text-[10px] uppercase tracking-widest text-white/60">
-                      {selectedModel ? `${selectedModel.family} · ${selectedModel.format.quantization} · ${selectedModel.format.sizeLabel}` : "Select a Tiny Aya model to download"}
+                      {selectedModel ? `${selectedModel.family} · ${formatQuantization(selectedModel.format.quantization)} · ${selectedModel.format.sizeLabel}` : "Select a Tiny Aya model to download"}
                     </span>
                     {isRunning ? (
                       <Button aria-label="Stop generation" className="h-10 shrink-0 rounded-xl" onClick={stopGeneration} size="sm" type="button" variant="sophon">
@@ -461,15 +519,20 @@ export function SophonWorkbench() {
                     )}
                   </div>
                 </div>
-                <div className="mt-3 flex justify-between gap-4 px-1 font-mono text-[10px] uppercase tracking-wider text-white/60" id="prompt-help">
-                  <span className={cn(modelCompatibility === "incompatible" && "text-destructive")}>
-                    {modelCompatibility === "unselected" ? "Choose a model to begin" : modelCompatibility === "probing" ? "Checking local runtime…" : modelCompatibility === "incompatible" ? "Selected model is unavailable in this browser" : <><span className="min-[360px]:hidden">Enter to send</span><span className="hidden min-[360px]:inline">Enter to send · Shift+Enter for a new line</span></>}
+                <footer className="mt-2 flex min-w-0 items-center gap-2 px-1 font-mono text-[9px] uppercase tracking-[0.1em] text-white/45">
+                  <span className={cn("min-w-0 truncate text-white/60", modelCompatibility === "incompatible" && "text-destructive")} id="prompt-help">
+                    {modelCompatibility === "unselected" ? "Choose a model to begin" : modelCompatibility === "probing" ? "Checking browser GPU…" : modelCompatibility === "incompatible" ? "Selected model needs browser GPU support" : <><span className="min-[360px]:hidden">Enter to send</span><span className="hidden min-[360px]:inline">Enter to send · Shift+Enter for a new line</span></>}
                   </span>
+                  <span aria-hidden="true" className="shrink-0 text-white/20">·</span>
                   <span className="shrink-0 tabular-nums">{prompt.length} chars</span>
-                </div>
-                <p className="mt-2 truncate px-1 text-right font-mono text-[10px] uppercase tracking-wider text-white/50" data-state={browserStorage === undefined ? "checking" : browserStorage === null ? "unavailable" : "ready"} data-testid="browser-storage" title="Approximate Sophon site usage / browser-managed quota, including cached models.">
-                  Browser storage · <span className="tabular-nums text-white/70">{storageLabel}</span>
-                </p>
+                  <span aria-hidden="true" className="shrink-0 text-white/20">·</span>
+                  <div className="ml-auto flex min-w-0 items-center gap-0.5">
+                    <InfoHint className="-my-1" concept="browserStorage" />
+                    <p className="min-w-0 truncate text-right" data-state={browserStorage === undefined ? "checking" : browserStorage === null ? "unavailable" : "ready"} data-testid="browser-storage">
+                      Browser storage · <span className="tabular-nums text-white/70">{storageLabel}</span>
+                    </p>
+                  </div>
+                </footer>
               </form>
             </div>
           </section>
@@ -533,7 +596,7 @@ function getRuntimeStatus(
     return { label: "Select model", className: "text-white/70", dotClassName: "bg-sophon-warning shadow-[0_0_10px_var(--sophon-warning)]" };
   }
   if (!capabilities) {
-    return { label: "Checking runtime", className: "text-white/70", dotClassName: "animate-pulse bg-white/60 motion-reduce:animate-none" };
+    return { label: "Checking browser GPU", className: "text-white/70", dotClassName: "animate-pulse bg-white/60 motion-reduce:animate-none" };
   }
   if (getModelCompatibility(capabilities, model) === "incompatible") {
     return { label: "Model unavailable", className: "text-destructive", dotClassName: "bg-destructive" };
@@ -541,7 +604,7 @@ function getRuntimeStatus(
   if (loadedModelId === model.id) {
     return { label: "Model ready", className: "text-sophon-verified", dotClassName: "bg-sophon-verified shadow-[0_0_10px_var(--sophon-verified)]" };
   }
-  return { label: "Available · not loaded", className: "text-white/70", dotClassName: "bg-sophon-warning shadow-[0_0_10px_var(--sophon-warning)]" };
+  return { label: "Ready to load", className: "text-white/70", dotClassName: "bg-sophon-warning shadow-[0_0_10px_var(--sophon-warning)]" };
 }
 
 function activityFromLog(event: OnnxLogEvent): RuntimeActivity {
@@ -555,9 +618,9 @@ function activityFromLog(event: OnnxLogEvent): RuntimeActivity {
   const label = phase === "download"
     ? getDownloadStageLabel(event.progress?.stage)
     : phase === "tokenize"
-      ? "Tokenizing context"
+      ? "Preparing input"
       : phase === "decode"
-        ? "Running local inference"
+        ? "Generating locally"
         : event.message || "Initializing runtime";
   return { detail: event.progress ? formatDownloadDetail(event.progress) : event.detail, label, phase, progress: event.progress };
 }
@@ -565,7 +628,7 @@ function activityFromLog(event: OnnxLogEvent): RuntimeActivity {
 function getDownloadStageLabel(stage?: NonNullable<OnnxLogEvent["progress"]>["stage"], compact = false) {
   if (stage === "resume") return compact ? "Resuming" : "Resuming model";
   if (stage === "verify") return compact ? "Verifying" : "Verifying model";
-  if (stage === "cache") return "Loading cached model";
+  if (stage === "cache") return "Loading downloaded model";
   return compact ? "Downloading" : "Downloading model";
 }
 
@@ -579,7 +642,7 @@ function formatDownloadDetail(progress: NonNullable<OnnxLogEvent["progress"]>) {
 }
 
 function formatDownloadAriaText(progress: NonNullable<OnnxLogEvent["progress"]>) {
-  const stage = progress.stage === "verify" ? "verified" : progress.stage === "cache" ? "loaded from cache" : "loaded";
+  const stage = progress.stage === "verify" ? "verified" : progress.stage === "cache" ? "loaded from browser storage" : "loaded";
   const resumed = progress.resumedBytes ? `, including ${formatStorageBytes(progress.resumedBytes)} resumed` : "";
   return `${formatStorageBytes(progress.loaded)} of ${formatStorageBytes(progress.total)} ${stage}${resumed}`;
 }
@@ -593,7 +656,7 @@ function formatEta(milliseconds: number) {
 
 function activityFromTelemetry(telemetry: GenerationTelemetryEvent): RuntimeActivity {
   if (telemetry.phase === "prefill") {
-    return { detail: `${telemetry.contextTokenCount} context tokens`, label: "Prefilling context", phase: "prefill" };
+    return { detail: `${telemetry.contextTokenCount} context tokens`, label: "Reading context", phase: "prefill" };
   }
   if (telemetry.phase === "decode") {
     return {
@@ -610,7 +673,15 @@ function activityFromTelemetry(telemetry: GenerationTelemetryEvent): RuntimeActi
 }
 
 function formatRate(value: number | null) {
-  return value === null ? "decode rate pending" : `${value.toFixed(1)} decode tok/s`;
+  return value === null ? "Speed pending" : `${value.toFixed(1)} tokens/s`;
+}
+
+function formatProvider(value: string) {
+  return value === "webgpu" ? "WebGPU" : value.toUpperCase();
+}
+
+function formatQuantization(value: string) {
+  return value === "q4f16" ? "4-bit" : value;
 }
 
 function formatDuration(value: number | null) {

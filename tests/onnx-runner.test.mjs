@@ -65,5 +65,5 @@ test("preloads and reuses the pinned Tiny Aya WebGPU pipeline without generating
   assert.equal(env.allowRemoteModels, true);
   assert.equal(logs[0]?.phase, "download");
   assert.deepEqual(logs.filter((event) => event.progress).map((event) => event.progress), [{ loaded: 25, total: 100 }, { loaded: 100, total: 100 }]);
-  assert.match(logs.at(-1)?.message ?? "", /cached model pipeline/i);
+  assert.match(logs.at(-1)?.message ?? "", /reusing loaded model/i);
 });
