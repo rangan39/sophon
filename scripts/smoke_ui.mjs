@@ -30,43 +30,64 @@ try {
 
   const heading = activePage.getByRole("heading", { name: "SOPHON", exact: true });
   const textarea = activePage.getByRole("textbox", { name: "Message Sophon", exact: true });
-  const modelSelect = activePage.getByRole("combobox", { name: /^Choose model\./ });
+  const modelLibrary = activePage.getByRole("complementary", { name: "Model library", exact: true });
+  const modelRadios = modelLibrary.getByRole("radio");
   const sendButton = activePage.getByRole("button", { name: "Send message", exact: true });
   const storageStatus = activePage.getByTestId("browser-storage");
   await assertVisible(heading, "Sophon heading");
   await assertVisible(textarea, "labeled prompt textarea");
   assert.equal(await textarea.getAttribute("placeholder"), "Ask the local model anything...");
-  await assertVisible(modelSelect, "model selector");
+  await assertVisible(modelLibrary, "desktop model library");
   await assertVisible(storageStatus, "browser storage status");
   await activePage.waitForFunction(() => document.querySelector('[data-testid="browser-storage"]')?.getAttribute("data-state") === "ready", undefined, { timeout: timeoutMs });
   assert.match((await storageStatus.textContent()) ?? "", /^\s*Browser storage · .+ \/ .+ · (Persistent|Best effort)\s*$/);
-  assert.equal(await modelSelect.evaluate((element) => element.tagName), "SELECT", "Model control must use a native select.");
+  assert.equal(await modelRadios.count(), 4, "Model library must expose exactly four native radio controls.");
   assert.equal(await sendButton.isDisabled(), true, "Send must be disabled for an empty prompt.");
 
   await activePage.waitForFunction(() => {
-    const options = document.querySelectorAll('select[aria-label^="Choose model"] option');
-    return options.length > 0 && [...options].every((option) => !/(checking compatibility|downloading)/.test(option.textContent ?? ""));
+    const radios = document.querySelectorAll('[data-model-surface="desktop"] input[type="radio"]');
+    return radios.length === 4 && [...radios].every((radio) => !/(Checking WebGPU|Downloading)/.test(radio.getAttribute("aria-label") ?? ""));
   }, undefined, { timeout: timeoutMs });
-  const options = await modelSelect.locator("option").evaluateAll((nodes) => nodes.map((option) => ({
-    disabled: option.disabled,
-    label: option.textContent?.trim() ?? "",
-    value: option.value
+  const models = await modelRadios.evaluateAll((nodes) => nodes.map((radio) => ({
+    checked: radio.checked,
+    disabled: radio.disabled,
+    label: radio.getAttribute("aria-label") ?? "",
+    value: radio.value
   })));
-  assert.ok(options.every((option) => /(verified|experimental|unavailable)$/.test(option.label)), "Every model option must expose availability.");
-  assert.ok(options.some((option) => option.value === "tiny-aya-global" && /non-commercial · experimental$/.test(option.label)), "Tiny Aya must disclose its license and experimental status without downloading it.");
-  const supportedOption = options.find((option) => !option.disabled);
-  assert.ok(supportedOption, "At least one model must be compatible with the smoke-test browser.");
-  await modelSelect.selectOption(supportedOption.value);
+  assert.deepEqual(models.map((model) => model.value), ["tiny-aya-global", "tiny-aya-earth", "tiny-aya-fire", "tiny-aya-water"]);
+  assert.ok(models.every((model) => /\.( Available| Requires WebGPU)\.$/.test(model.label)), "Every model radio must expose availability.");
+  assert.ok(models.every((model) => /non-commercial/.test(model.label)), "Every Tiny Aya model must disclose its non-commercial license.");
+  assert.ok(models.some((model) => !model.disabled), "At least one model must be compatible with the smoke-test browser.");
+  assert.ok(models.every((model) => !model.checked), "No model should be selected before an explicit user choice.");
   await textarea.fill("UI smoke check");
-  assert.equal(await sendButton.isEnabled(), true, "Send must become enabled when the prompt and runtime are ready.");
+  assert.equal(await sendButton.isDisabled(), true, "Send must remain disabled until a model is selected.");
   await textarea.fill("");
   assert.equal(await sendButton.isDisabled(), true, "Send must disable again when the prompt is cleared.");
+  const toggleModels = modelLibrary.locator('button[aria-controls="model-library-desktop"]');
+  assert.equal(await toggleModels.getAttribute("aria-label"), "Collapse model library");
+  await toggleModels.click();
+  assert.equal(await modelLibrary.getAttribute("data-state"), "collapsed");
+  assert.equal(await toggleModels.getAttribute("aria-expanded"), "false");
+  await activePage.waitForFunction(() => (document.querySelector("#model-library-desktop")?.getBoundingClientRect().width ?? Infinity) <= 80, undefined, { timeout: timeoutMs });
+  assert.ok((await modelLibrary.boundingBox())?.width <= 80, "Collapsed model rail must remain compact.");
+  await modelLibrary.getByRole("button", { name: "Expand model library", exact: true }).click();
+  assert.equal(await modelLibrary.getAttribute("data-state"), "expanded");
   console.log("✓ Desktop semantics and composer gating pass");
 
   await activePage.setViewportSize({ width: 320, height: 800 });
   await assertVisible(textarea, "mobile prompt textarea");
-  await assertVisible(modelSelect, "mobile model selector");
-  await assertWithinViewport(modelSelect, 320, "mobile model selector");
+  const mobileTrigger = activePage.getByRole("button", { name: "Open model library", exact: true });
+  await assertVisible(mobileTrigger, "mobile model-library trigger");
+  await mobileTrigger.click();
+  const mobileDialog = activePage.getByRole("dialog", { name: "Model library", exact: true });
+  await assertVisible(mobileDialog, "mobile model-library sheet");
+  assert.equal(await mobileTrigger.getAttribute("aria-expanded"), "true");
+  assert.equal(await mobileDialog.getByRole("radio").count(), 4, "Mobile sheet must expose the same four models.");
+  await assertWithinViewport(activePage.getByTestId("mobile-model-sheet"), 320, "mobile model-library sheet");
+  await activePage.keyboard.press("Escape");
+  await mobileDialog.waitFor({ state: "hidden", timeout: timeoutMs });
+  assert.equal(await mobileTrigger.getAttribute("aria-expanded"), "false");
+  assert.equal(await mobileTrigger.evaluate((element) => document.activeElement === element), true, "Closing the mobile sheet must restore trigger focus.");
   await assertWithinViewport(storageStatus, 320, "mobile browser storage status");
   const widths = await activePage.evaluate(() => ({
     body: document.body.scrollWidth,
@@ -96,20 +117,24 @@ try {
   });
   activePage = await preloadContext.newPage();
   await openPage(activePage);
-  const preloadSelect = activePage.locator('select[aria-label^="Choose model"]');
+  const preloadModels = activePage.getByRole("complementary", { name: "Model library", exact: true });
+  const preloadGlobal = preloadModels.locator('[data-model-id="tiny-aya-global"]');
   const preloadSend = activePage.getByRole("button", { name: "Send message", exact: true });
-  await preloadSelect.waitFor({ state: "visible", timeout: timeoutMs });
-  await activePage.waitForFunction(() => [...document.querySelectorAll('select option')].some((option) => option.value === "tiny-aya-global" && option.textContent?.endsWith("experimental") && !option.disabled) && document.querySelector('select')?.value === "tiny-gpt2", undefined, { timeout: timeoutMs });
-  await preloadSelect.selectOption("tiny-aya-global");
+  await preloadGlobal.waitFor({ state: "visible", timeout: timeoutMs });
+  await activePage.waitForFunction(() => {
+    const radios = [...document.querySelectorAll('[data-model-surface="desktop"] input[type="radio"]')];
+    return radios.some((radio) => radio.value === "tiny-aya-global" && radio.getAttribute("aria-label")?.endsWith("Available.") && !radio.disabled) && radios.every((radio) => !radio.checked);
+  }, undefined, { timeout: timeoutMs });
+  await preloadGlobal.click();
   const requestedModelUrl = await Promise.race([modelRequest, new Promise((_, reject) => { modelRequestTimeout = setTimeout(() => reject(new Error("Tiny Aya preload did not request its pinned repository.")), timeoutMs); })]);
   clearTimeout(modelRequestTimeout);
   assert.match(requestedModelUrl, /7fff1be9627e40f0d89c33f406882bdafb56ec90/);
-  const loadingSelection = await preloadSelect.evaluate((select) => ({ label: select.selectedOptions[0]?.textContent?.trim(), value: select.value }));
-  assert.deepEqual(loadingSelection, { label: "Tiny Aya Global 3.35B · non-commercial · downloading", value: "tiny-aya-global" });
+  const loadingSelection = await preloadGlobal.getByRole("radio").evaluate((radio) => ({ checked: radio.checked, label: radio.getAttribute("aria-label"), value: radio.value }));
+  assert.deepEqual(loadingSelection, { checked: true, label: "Tiny Aya Global 3.35B · non-commercial. Downloading.", value: "tiny-aya-global" });
   const progressBar = activePage.getByRole("progressbar", { name: "Loading Tiny Aya Global 3.35B · non-commercial", exact: true });
   await assertVisible(progressBar, "model download progress bar");
   assert.equal(await progressBar.getAttribute("aria-valuenow"), null, "Progress must remain indeterminate until byte totals arrive.");
-  assert.equal(await preloadSelect.isEnabled(), true, "The model selector must remain enabled so another selection can cancel the download.");
+  assert.equal(await preloadModels.locator('[data-model-id="tiny-aya-earth"] input').isEnabled(), true, "Other model radios must remain enabled so another selection can cancel the download.");
   await activePage.getByRole("textbox", { name: "Message Sophon", exact: true }).fill("Preload gate");
   assert.equal(await preloadSend.isDisabled(), true, "Send must remain disabled while the selected model downloads.");
   await blockedModelRoute.abort("blockedbyclient");
@@ -117,12 +142,16 @@ try {
   await progressBar.waitFor({ state: "detached", timeout: timeoutMs });
   assert.equal(await preloadSend.isEnabled(), true, "A failed preload must leave generation available for an explicit retry.");
   await preloadContext.close();
-  console.log("✓ Dropdown selection starts the pinned download and gates generation");
+  console.log("✓ Sidebar selection starts the pinned download and gates generation");
 
   const progressContext = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   await progressContext.addInitScript(() => {
     const requests = [];
     Object.defineProperty(window, "__sophonWorkerRequests", { value: requests });
+    Object.defineProperty(window, "__storagePersistCalls", { value: 0, writable: true });
+    try {
+      Object.defineProperty(navigator.storage, "persist", { configurable: true, value: async () => { window.__storagePersistCalls += 1; return true; } });
+    } catch {}
     class FakeWorker {
       constructor() {
         this.onmessage = null;
@@ -133,8 +162,8 @@ try {
         if (request.type === "capabilities") queueMicrotask(() => this.respond({ type: "complete", requestId: request.requestId, result: { webgpu: true, wasm: true, crossOriginIsolated: false } }));
         if (request.type === "preload") queueMicrotask(() => {
           this.respond({ type: "log", requestId: request.requestId, event: { level: "info", message: "Loading model", phase: "download", progress: { loaded: 25, total: 100 } } });
-          if (request.modelId === "tiny-gpt2") this.respond({ type: "complete", requestId: request.requestId, result: { ok: true } });
-          else window.__finishPreload = () => this.respond({ type: "complete", requestId: request.requestId, result: { ok: true } });
+          window.__setDownloadProgress = (progress) => this.respond({ type: "log", requestId: request.requestId, event: { level: "info", message: "Loading model", phase: "download", progress } });
+          window.__finishPreload = () => this.respond({ type: "complete", requestId: request.requestId, result: { ok: true } });
         });
       }
       respond(data) {
@@ -148,14 +177,26 @@ try {
   });
   activePage = await progressContext.newPage();
   await openPage(activePage);
-  const progressSelect = activePage.locator('select[aria-label^="Choose model"]');
-  await activePage.waitForFunction(() => [...document.querySelectorAll('select option')].some((option) => option.value === "tiny-aya-global" && option.textContent?.endsWith("experimental")), undefined, { timeout: timeoutMs });
-  await progressSelect.selectOption("tiny-aya-global");
+  const progressGlobal = activePage.locator('[data-model-surface="desktop"][data-model-id="tiny-aya-global"]');
+  await activePage.waitForFunction(() => document.querySelector('[data-model-surface="desktop"] input[value="tiny-aya-global"]')?.getAttribute("aria-label")?.endsWith("Available."), undefined, { timeout: timeoutMs });
+  assert.equal((await activePage.evaluate(() => window.__sophonWorkerRequests)).some((request) => request.type === "preload"), false, "Capability probing must not preload a model.");
+  await progressGlobal.click();
+  await activePage.waitForFunction(() => window.__storagePersistCalls === 1, undefined, { timeout: timeoutMs });
   await activePage.waitForFunction(() => window.__sophonWorkerRequests?.some((request) => request.type === "preload" && request.modelId === "tiny-aya-global"), undefined, { timeout: timeoutMs });
   const determinateProgress = activePage.getByRole("progressbar", { name: "Loading Tiny Aya Global 3.35B · non-commercial", exact: true });
   await assertVisible(determinateProgress, "determinate model download progress bar");
   assert.equal(await determinateProgress.getAttribute("aria-valuenow"), "25");
   assert.equal(await determinateProgress.getAttribute("aria-valuetext"), "25 B of 100 B loaded");
+  await activePage.evaluate(() => window.__setDownloadProgress({ loaded: 50, total: 100, stage: "resume", resumedBytes: 25, networkBytes: 25, bytesPerSecond: 20, etaMs: 2500 }));
+  await activePage.getByText("Resuming model · 50%", { exact: true }).waitFor({ state: "visible", timeout: timeoutMs });
+  assert.equal(await determinateProgress.getAttribute("aria-valuetext"), "50 B of 100 B loaded, including 25 B resumed");
+  assert.match(await progressGlobal.getByRole("radio").getAttribute("aria-label") ?? "", /\. Resuming 50%\.$/);
+  await activePage.evaluate(() => window.__setDownloadProgress({ loaded: 80, total: 100, stage: "verify" }));
+  await activePage.getByText("Verifying model · 80%", { exact: true }).waitFor({ state: "visible", timeout: timeoutMs });
+  assert.equal(await determinateProgress.getAttribute("aria-valuetext"), "80 B of 100 B verified");
+  await activePage.evaluate(() => window.__setDownloadProgress({ loaded: 100, total: 100, stage: "cache" }));
+  await activePage.getByText("Loading cached model · 100%", { exact: true }).waitFor({ state: "visible", timeout: timeoutMs });
+  assert.equal(await determinateProgress.getAttribute("aria-valuetext"), "100 B of 100 B loaded from cache");
   assert.equal((await activePage.evaluate(() => window.__sophonWorkerRequests)).some((request) => request.type === "generate"), false);
   await activePage.evaluate(() => window.__finishPreload());
   await determinateProgress.waitFor({ state: "detached", timeout: timeoutMs });

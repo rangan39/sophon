@@ -9,6 +9,7 @@ node_modules/
 dist/
 coverage/
 artifacts/models/
+artifacts/model-build-venv/
 .DS_Store
 .vercel
 .env*

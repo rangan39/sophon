@@ -1,8 +1,6 @@
 export type ModelProvider = "webgpu" | "wasm";
 export type ModelVerification = "verified" | "experimental";
-export type ModelFamily = "gpt2" | "smollm" | "qwen" | "llama" | "cohere";
-
-const BUNDLED_MODEL_BASE_URL = "/models/v-196cb8befc7d/sshleifer-tiny-gpt2-trace";
+export type ModelFamily = "cohere";
 
 type LocalModelSource = {
   kind: "local";
@@ -44,84 +42,48 @@ export function resolveModelProvider(
 
 export const MODEL_REGISTRY = [
   {
-    id: "tiny-gpt2",
-    label: "Tiny GPT-2",
-    family: "gpt2",
-    description: "Bundled cached-decoder baseline used to verify Sophon's local runtime.",
-    verification: "verified",
-    source: {
-      kind: "local",
-      baseUrl: BUNDLED_MODEL_BASE_URL,
-      revision: "bundled"
-    },
-    format: {
-      quantization: "fp32",
-      sizeLabel: "4.1 MB",
-      sizeBytes: 4_051_176,
-      contextLength: 1024
-    },
-    providers: ["wasm", "webgpu"]
-  },
-  {
-    id: "smollm2-135m",
-    label: "SmolLM2 135M Instruct",
-    family: "smollm",
-    description: "Small instruction model; repository compatibility is not yet certified by Sophon.",
+    id: "tiny-aya-global",
+    label: "Tiny Aya Global 3.35B · non-commercial",
+    family: "cohere",
+    description: "Balanced multilingual coverage across 70+ languages; CC BY-NC 4.0 and Cohere Labs AUP apply.",
     verification: "experimental",
-    source: { kind: "huggingface", repo: "onnx-community/SmolLM2-135M-Instruct-ONNX", revision: "b8a5c0f183b78c55955a5364f610c36668b5e681" },
-    format: { quantization: "q4", sizeLabel: "~140 MB", sizeBytes: null, contextLength: null },
-    providers: ["webgpu", "wasm"]
-  },
-  {
-    id: "smollm2-360m",
-    label: "SmolLM2 360M Instruct",
-    family: "smollm",
-    description: "Larger SmolLM2 variant; repository compatibility is not yet certified by Sophon.",
-    verification: "experimental",
-    source: { kind: "huggingface", repo: "HuggingFaceTB/SmolLM2-360M-Instruct", revision: "a10cc1512eabd3dde888204e902eca88bddb4951" },
-    format: { quantization: "q4", sizeLabel: "~360 MB", sizeBytes: null, contextLength: null },
-    providers: ["webgpu", "wasm"]
-  },
-  {
-    id: "qwen25-coder-0.5b",
-    label: "Qwen2.5 Coder 0.5B",
-    family: "qwen",
-    description: "Coding-focused model; repository compatibility is not yet certified by Sophon.",
-    verification: "experimental",
-    source: { kind: "huggingface", repo: "onnx-community/Qwen2.5-Coder-0.5B-Instruct", revision: "f0292f665fd307846ff3c318a91a1bc29d091492" },
-    format: { quantization: "q4", sizeLabel: "~500 MB", sizeBytes: null, contextLength: null },
+    source: { kind: "huggingface", repo: "onnx-community/tiny-aya-global-ONNX", revision: "7fff1be9627e40f0d89c33f406882bdafb56ec90" },
+    format: { quantization: "q4f16", sizeLabel: "~2.35 GB", sizeBytes: 2_354_413_407, contextLength: 8192 },
     providers: ["webgpu"]
   },
   {
-    id: "llama32-1b",
-    label: "Llama 3.2 1B Instruct",
-    family: "llama",
-    description: "Desktop-class model; repository compatibility is not yet certified by Sophon.",
+    id: "tiny-aya-earth",
+    label: "Tiny Aya Earth 3.35B · non-commercial",
+    family: "cohere",
+    description: "Optimized for West Asian and African languages; CC BY-NC 4.0 and Cohere Labs AUP apply.",
     verification: "experimental",
-    source: { kind: "huggingface", repo: "onnx-community/Llama-3.2-1B-Instruct-ONNX", revision: "14007543b6dc92de88daf96a9aa85d2f95ace6ef" },
-    format: { quantization: "q4", sizeLabel: "~1 GB", sizeBytes: null, contextLength: null },
+    source: { kind: "huggingface", repo: "onnx-community/tiny-aya-earth-ONNX", revision: "24a24ee8b8483762575fe734e57bad21ca36d8c6" },
+    format: { quantization: "q4f16", sizeLabel: "~2.35 GB", sizeBytes: 2_354_413_397, contextLength: 8192 },
     providers: ["webgpu"]
   },
   {
-    id: "qwen3-1.7b",
-    label: "Qwen3 1.7B",
-    family: "qwen",
-    description: "Large experimental model intended for high-memory desktop GPUs.",
+    id: "tiny-aya-fire",
+    label: "Tiny Aya Fire 3.35B · non-commercial",
+    family: "cohere",
+    description: "Optimized for South Asian languages; CC BY-NC 4.0 and Cohere Labs AUP apply.",
     verification: "experimental",
-    source: { kind: "huggingface", repo: "onnx-community/Qwen3-1.7B-ONNX", revision: "cc6a06a21d614e9b8e92a6adfab1074d4e7d2438" },
-    format: { quantization: "q4", sizeLabel: "~1.7 GB", sizeBytes: null, contextLength: null },
+    source: { kind: "huggingface", repo: "onnx-community/tiny-aya-fire-ONNX", revision: "70f6b7edf79955855d7939342d2a39ab644d3ed6" },
+    format: { quantization: "q4f16", sizeLabel: "~2.35 GB", sizeBytes: 2_354_413_397, contextLength: 8192 },
     providers: ["webgpu"]
   },
-  { id: "tiny-aya-global", label: "Tiny Aya Global 3.35B · non-commercial", family: "cohere", description: "67-language model; CC BY-NC 4.0 and Cohere Labs AUP apply.", verification: "experimental", source: { kind: "huggingface", repo: "onnx-community/tiny-aya-global-ONNX", revision: "7fff1be9627e40f0d89c33f406882bdafb56ec90" }, format: { quantization: "q4f16", sizeLabel: "~2.35 GB", sizeBytes: 2_354_413_407, contextLength: 8192 }, providers: ["webgpu"] }
+  {
+    id: "tiny-aya-water",
+    label: "Tiny Aya Water 3.35B · non-commercial",
+    family: "cohere",
+    description: "Optimized for European and Asia-Pacific languages; CC BY-NC 4.0 and Cohere Labs AUP apply.",
+    verification: "experimental",
+    source: { kind: "huggingface", repo: "onnx-community/tiny-aya-water-ONNX", revision: "e1109b664b476b709d13bf40dc105efb147caa09" },
+    format: { quantization: "q4f16", sizeLabel: "~2.35 GB", sizeBytes: 2_354_413_397, contextLength: 8192 },
+    providers: ["webgpu"]
+  }
 ] as const satisfies readonly [ModelManifest, ...ModelManifest[]];
 
-export const DEFAULT_ONNX_MODEL = MODEL_REGISTRY[0];
-
-export function getModelDefinition(id: string = DEFAULT_ONNX_MODEL.id) {
-  return MODEL_REGISTRY.find((model) => model.id === id) ?? DEFAULT_ONNX_MODEL;
-}
-
-export function requireModelDefinition(id: string = DEFAULT_ONNX_MODEL.id) {
+export function requireModelDefinition(id: string) {
   const model = MODEL_REGISTRY.find((candidate) => candidate.id === id);
   if (!model) throw new Error(`Unknown model identifier: ${id}`);
   return model;

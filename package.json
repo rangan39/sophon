@@ -9,10 +9,10 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "benchmark:download": "node scripts/benchmark_model_download.mjs",
     "budget:bundle": "node scripts/check_bundle_budget.mjs",
     "test": "node --experimental-strip-types --test tests/*.test.mjs",
     "test:metrics": "node --experimental-strip-types --test tests/generation-metrics.test.mjs",
-    "benchmark:runtime": "node scripts/benchmark_runtime.mjs",
     "smoke:ui": "node scripts/smoke_ui.mjs",
     "smoke:prompt": "node scripts/smoke_prompt.mjs",
     "start": "next start",
@@ -23,8 +23,12 @@
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
     "clsx": "^2.1.1",
+    "hash-wasm": "^4.12.0",
+    "idb": "^8.0.3",
     "lucide-react": "^0.468.0",
     "next": "^16.2.10",
+    "p-queue": "^9.3.2",
+    "p-retry": "^7.1.1",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-markdown": "^10.1.0",
@@ -45,6 +49,7 @@
   },
   "overrides": {
     "adm-zip": "0.6.0",
-    "postcss": "$postcss"
+    "postcss": "$postcss",
+    "sharp": "0.35.3"
   }
 }

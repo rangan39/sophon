@@ -1,12 +1,13 @@
 # Sophon runtime architecture
 
-Sophon is a browser-only local chat and compatibility tool for small causal language models in ONNX format. Its support claims are intentionally narrower than its model catalog.
+Sophon is a browser-only local chat and compatibility tool for Cohere Labs' Tiny Aya language models in ONNX format. Its support claims are intentionally narrower than its model catalog.
 
 ## Runtime flow
 
 ```text
 Model manifest
   → persistent model worker
+  → resumable OPFS delivery / verified File objects
   → Transformers.js pipeline
   → ONNX Runtime provider
   → token telemetry / generation result
@@ -16,24 +17,34 @@ The browser owns one long-lived worker. Requests are queued inside that worker s
 
 ## Repository boundary
 
-Sophon has no inference server or server fallback. Next.js delivers the application shell and versioned static model files; the Web Worker owns tokenization, model sessions, generation, and telemetry. Remote experimental artifacts are fetched directly by Transformers.js from their pinned Hugging Face revisions. Prompts are never routed through a repository-owned API.
+Sophon has no inference server or server fallback. Next.js delivers the application shell; the Web Worker owns model delivery, tokenization, sessions, generation, and telemetry. Model artifacts are fetched from pinned Hugging Face revisions only after an explicit user selection. Prompts are never routed through a repository-owned API.
 
 ## Model support levels
 
 - `verified`: Sophon has a known graph contract and has validated the model against its own runtime.
 - `experimental`: a compatible repository is known, but Sophon has not certified the graph, tokenizer, provider support, and generation behavior together.
 
-Only verified entries should be treated as supported. Experimental entries are available for compatibility work and may fail on a particular browser or device.
+The current four-model catalog is experimental. Each entry may fail on a particular browser or device until its graph and tokenizer combination completes the conformance suite.
 
 ## Unified model adapter
 
-Bundled and remote models use the Transformers.js text-generation pipeline. The pipeline owns architecture-specific ONNX sessions, KV-cache tensors, sampling, browser caching, and provider integration. A `TextStreamer` timestamps generated token IDs before the completed result returns, while request-scoped stopping criteria cancel generation without destroying the loaded pipeline.
+The Tiny Aya models use the Transformers.js text-generation pipeline. The pipeline owns architecture-specific ONNX sessions, KV-cache tensors, sampling, browser caching, and provider integration. A `TextStreamer` timestamps generated token IDs before the completed result returns, while request-scoped stopping criteria cancel generation without destroying the loaded pipeline.
 
-The bundled Tiny GPT-2 graph exposes explicit past-key/value inputs and present-key/value outputs. It supports a 1,024-position context and runs through the same adapter as remote models. Sophon reserves output-token capacity, removes the oldest complete conversation turns when necessary, and left-truncates only when one remaining turn still exceeds the budget.
+Each Tiny Aya variant is a 3.35B-parameter q4f16 graph with an 8K context window and requires WebGPU. Sophon reserves output-token capacity, removes the oldest complete conversation turns when necessary, and left-truncates only when one remaining turn still exceeds the budget.
 
-The tracked bundle totals 4,051,176 bytes. Its ONNX graph is 491,629 bytes, its tokenizer is 3,558,232 bytes, and the configuration files total 1,315 bytes. The public URL includes the aggregate content-hash prefix `v-196cb8befc7d`; Next.js rewrites that URL to the single tracked copy and serves it with a one-year immutable cache policy.
+The q4f16 graph, tokenizer, and configuration files total about 2.35 GB per variant. Verified weights are retained in browser-private origin storage; selecting another variant releases the active worker but retains completed files and flushed download segments on disk.
 
-Instruction-model conversations remain structured until they reach the pipeline, allowing each tokenizer to apply its native chat template. GPT-2 uses a completion-style role transcript with an assistant cue.
+Conversations remain structured until they reach the pipeline, allowing the Cohere tokenizer to apply its native chat template.
+
+## Model delivery and integrity
+
+The registry is paired with an allowlisted artifact manifest containing immutable repository revisions, exact paths, byte sizes, and SHA-256 digests. The existing model worker is also the delivery worker, which keeps main-thread work and cross-worker copies out of the hot path.
+
+Supported browsers use one global queue with at most four HTTP range requests. Each 64 MiB segment is streamed into an OPFS synchronous access handle at its final byte offset. A segment becomes resumable only after its writes and `flush()` complete, followed by an IndexedDB manifest commit. Strong ETags and `If-Range` protect resumed files from remote revision drift. After all segments complete, Sophon sequentially hashes the OPFS file and exposes it to ONNX Runtime only when the digest matches the pinned manifest.
+
+The persistent path is an optimization, not a second runtime. Missing platform APIs, absent range support, or unavailable storage fall back to Transformers.js and CacheStorage. Contract violations and integrity failures do not fall back: they fail closed. Large weights use OPFS only, avoiding a duplicate CacheStorage copy; small configuration and tokenizer resources keep the standard Transformers.js cache.
+
+The artifact release pipeline lives outside `src`. It converts the current 1.92 GiB + 256 MiB sidecars into five balanced, conventionally named shards, rewrites ONNX external locations, stably topologically orders the upstream node definitions, updates the Transformers.js shard count, and proves tensor identity before publication. It never runs during a Next.js or Vercel build.
 
 ## Metrics
 
@@ -71,6 +82,7 @@ Generation results include exact tokenizer IDs and individually decoded text for
 
 ## Next technical milestones
 
-1. Record remote artifact sizes/checksums and define a review process for updating pinned revisions.
-2. Add model conformance fixtures that validate tokenizer, graph inputs/outputs, EOS behavior, chat templates, and provider compatibility.
-3. Add a cross-origin delivery test before enabling threaded-WASM isolation headers.
+1. Publish and benchmark the verified five-shard derivatives, then pin their immutable revisions.
+2. Add explicit per-model cache inspection and deletion controls before automatic eviction is considered.
+3. Add model conformance fixtures that validate tokenizer, graph inputs/outputs, EOS behavior, chat templates, and provider compatibility.
+4. Add a cross-origin delivery test before enabling threaded-WASM isolation headers.

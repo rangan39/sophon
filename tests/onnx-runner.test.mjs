@@ -6,17 +6,8 @@ register("./alias-loader.mjs", import.meta.url);
 const { env, pipelineCalls, pipelineRemotePathTemplates } = await import("@huggingface/transformers");
 const { preloadOnnxModel, prepareGenerationInput, readGeneratedText, runOnnxTextModel } = await import("../src/lib/onnx-runner.ts");
 
-test("prepares GPT-2 turns as a completion prompt with an assistant cue", () => {
-  assert.equal(prepareGenerationInput("gpt2", [
-    { role: "system", content: " Be concise. " },
-    { role: "user", content: " Hello " },
-    { role: "assistant", content: " Hi. " },
-    { role: "user", content: " Continue " }
-  ]), "System: Be concise.\n\nUser: Hello\n\nAssistant: Hi.\n\nUser: Continue\n\nAssistant:");
-});
-
-test("preserves structured turns for instruct-model chat templates", () => {
-  assert.deepEqual(prepareGenerationInput("qwen", [
+test("preserves structured turns for Cohere chat templates", () => {
+  assert.deepEqual(prepareGenerationInput([
     { role: "system", content: " Be concise. " },
     { role: "user", content: " Hello " },
     { role: "assistant", content: "   " }
@@ -42,7 +33,7 @@ test("returns typed cancellation before loading a model for an aborted request",
   controller.abort();
 
   assert.deepEqual(await runOnnxTextModel([{ role: "user", content: "Hello" }], {
-    modelId: "tiny-gpt2",
+    modelId: "tiny-aya-global",
     signal: controller.signal
   }), {
     ok: false,

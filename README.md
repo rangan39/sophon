@@ -1,17 +1,18 @@
 # Sophon
 
-Sophon is a browser-only local AI chat tool. It runs ONNX language models in a Web Worker with WebGPU or WASM, so prompts stay on the device instead of traveling to an inference server.
+Sophon is a browser-only local AI chat tool. It runs ONNX language models in a Web Worker with WebGPU, so prompts stay on the device instead of traveling to an inference server.
 
 Production app: [sophon-coral.vercel.app](https://sophon-coral.vercel.app)
 
 ## What it does
 
 - Chats with a local ONNX model directly in the browser
-- Uses WebGPU or WASM through Transformers.js and ONNX Runtime Web
+- Uses WebGPU through Transformers.js and ONNX Runtime Web
 - Keeps model loading and inference off the main UI thread
-- Loads additional models lazily through a strict model registry
+- Downloads a model only after the user selects it from a strict registry
+- Resumes interrupted weight downloads from verified browser-private storage
 - Shows model, runtime, and generation status in a compact HUD-style interface
-- Supports local Tiny GPT-2 assets and remote Transformers.js-compatible ONNX models
+- Offers Cohere Labs' Tiny Aya Global, Earth, Fire, and Water variants
 - Measures normal chat generations with tokenizer-derived TTFT, decode throughput, TPOT, and end-to-end latency
 - Provides an opt-in text/token/word lens with exact token IDs and context-window status
 
@@ -21,7 +22,8 @@ Production app: [sophon-coral.vercel.app](https://sophon-coral.vercel.app)
 - React 19 and strict TypeScript
 - Tailwind CSS and native platform controls
 - Transformers.js
-- ONNX Runtime Web, WebGPU, and WASM
+- ONNX Runtime Web and WebGPU
+- OPFS, IndexedDB, and streaming SHA-256 verification
 - Vercel
 
 ## Run locally
@@ -42,10 +44,15 @@ Build and validate the production bundle:
 npm run build
 npm run budget:bundle
 npm run check
-npm run benchmark:runtime
 ```
 
-WebGPU works best in a recent Chromium-based browser. The first run may download and cache the selected model.
+WebGPU works best in a recent Chromium-based browser. Opening Sophon does not download model weights; the first explicit model selection downloads and caches about 2.35 GB.
+
+Probe the pinned model CDN with the same bounded concurrency used by the app:
+
+```bash
+npm run benchmark:download
+```
 
 Build and run the production container:
 
@@ -68,39 +75,40 @@ Model manifest → persistent browser Web Worker → Transformers.js pipeline �
 
 The current registry includes:
 
-- Tiny GPT-2 — bundled local starter model
-- SmolLM2 135M and 360M — small instruction models
-- Qwen2.5 Coder 0.5B — coding-focused model
-- Llama 3.2 1B — general-purpose model
-- Qwen3 1.7B — larger chat model
+- Tiny Aya Global — balanced multilingual coverage
+- Tiny Aya Earth — optimized for West Asian and African languages
+- Tiny Aya Fire — optimized for South Asian languages
+- Tiny Aya Water — optimized for European and Asia-Pacific languages
 
-Tiny GPT-2 is currently the only `verified` entry. Remote entries are explicitly marked `experimental`; their known ONNX repositories are pinned to immutable revisions, but they may still fail on a particular browser or device until Sophon certifies the complete tokenizer, graph, and provider combination.
+All four entries are 3.35B-parameter, q4f16 ONNX conversions with an 8K context window. They are WebGPU-only, pinned to immutable repository revisions, and marked `experimental` until Sophon certifies each tokenizer, graph, and browser combination.
 
-## Local model assets
+Tiny Aya is an open-weights research release governed by CC BY-NC 4.0 and the Cohere Labs Acceptable Use Policy. Commercial use is not permitted under that license. Each variant has a separate browser cache key, so caching all four can consume roughly 9.4 GB.
 
-The bundled preset is tracked under:
+## Model delivery and caching
 
-```text
-public/models/sshleifer-tiny-gpt2-trace/
-  config.json
-  generation_config.json
-  onnx/model.onnx
-  tokenizer.json
-  tokenizer_config.json
-```
+Selecting a model starts a pinned Hugging Face download inside the browser worker. When supported, Sophon downloads 64 MiB ranges through one four-request queue, writes them directly into the Origin Private File System, checkpoints completed ranges in IndexedDB, and verifies each complete weight file against its pinned SHA-256 digest. A reload or model switch can therefore reuse durable ranges instead of restarting a multi-gigabyte file.
 
-Those five files total 4,051,176 bytes: the cached-decoder ONNX graph is 491,629 bytes and the tokenizer is 3,558,232 bytes. The application serves them through the content-addressed URL prefix `/models/v-196cb8befc7d/sshleifer-tiny-gpt2-trace/`, which rewrites to the tracked directory and can therefore use immutable browser caching without duplicating the assets.
+Verified OPFS `File` objects are handed to Transformers.js as ONNX external data, so weights are not duplicated in CacheStorage. Configuration and tokenizer files continue to use the normal Transformers.js browser cache. If OPFS, synchronous worker access, strong validators, or HTTP ranges are unavailable, Sophon falls back to the standard Transformers.js download path. Model selection also makes a best-effort persistent-storage request; the browser retains final control over quota and eviction.
 
-The graph uses explicit past-key/value inputs and present-key/value outputs. Bundled and remote models therefore share one Transformers.js generation path, including streaming, cancellation, caching, and token metrics. Instruction models receive structured chat turns and apply their tokenizer-native chat templates; Tiny GPT-2 remains a completion model.
+Switching models terminates the active worker and releases its runtime resources while verified files remain under browser-managed site storage. The UI reports approximate usage and quota through the Storage API and distinguishes downloading, resuming, verification, and cached initialization.
 
-To regenerate the bundled graph with the standard exporter:
+## Repacking model artifacts
+
+The checked-in artifact seed records the exact upstream files, immutable revisions, sizes, and hashes for all four models. Build-only tooling can repack the current imbalanced two-file q4f16 layout into five approximately 448 MiB ONNX sidecars without changing tensor bytes or node definitions. It also topologically orders the upstream nodes so the derivative passes the ONNX checker:
 
 ```bash
-python -m pip install "optimum-onnx==0.1.0"
-optimum-cli export onnx --model sshleifer/tiny-gpt2 --task text-generation-with-past --opset 18 artifacts/tiny-gpt2
+python3.12 -m venv artifacts/model-build-venv
+artifacts/model-build-venv/bin/pip install -r scripts/model-build-requirements.txt
+artifacts/model-build-venv/bin/python scripts/reshard_onnx.py \
+  --model-id tiny-aya-global \
+  --input-dir artifacts/models/tiny-aya-global-source \
+  --output-dir artifacts/models/tiny-aya-global-five-shard
+artifacts/model-build-venv/bin/python scripts/verify_model_artifacts.py \
+  --artifact-dir artifacts/models/tiny-aya-global-five-shard \
+  --source-dir artifacts/models/tiny-aya-global-source
 ```
 
-Copy the generated `config.json`, `generation_config.json`, and `model.onnx` into the tracked preset, then update the content hash and size in the registry and Next configuration. The registry tests fail when those values drift.
+The source snapshot must contain every pinned file recorded in `models/model-artifacts.seed.json`; unrelated files are ignored. Process one model at a time and publish verified derivatives to immutable Hugging Face revisions; model weights do not belong in the Next.js or Vercel build.
 
 ## Project layout
 
@@ -108,17 +116,19 @@ Copy the generated `config.json`, `generation_config.json`, and `model.onnx` int
 src/components/sophon-workbench.tsx  Chat/HUD interface
 src/components/ui/                    Small shared message/button primitives
 src/lib/onnx-models.ts                 Model registry
+src/lib/model-delivery/                Resumable OPFS model transport
 src/lib/generation-metrics.ts          Standardized token timing calculations
 src/lib/onnx-worker-protocol.ts         Validated worker message boundary
 src/lib/onnx-runner.ts                 Unified generation pipeline
 src/workers/onnx-worker.ts             Background inference worker
-public/models/                         Bundled model assets
 ```
 
 ## Limitations
 
 WebGPU support and ONNX operator coverage vary by browser and device. Model downloads are client-side, and the app currently reports runtime failures rather than falling back to a server inference provider.
 
+OPFS removes repeated network work and bounds download buffers, but ONNX Runtime still materializes the complete external data while creating a WebGPU session. Browser storage is not GPU or unified memory.
+
 All models use architecture-specific KV caching through Transformers.js. See [`docs/architecture.md`](docs/architecture.md) for support semantics and metric definitions.
 
-Long prompts are accepted, but each model can only receive its own context window. Sophon reserves space for the response, removes the oldest complete turns first, then left-truncates an oversized remaining turn. The bundled model supports 1,024 positions and reports how many earlier tokens were omitted.
+Long prompts are accepted, but each model can only receive its 8K context window. Sophon reserves space for the response, removes the oldest complete turns first, then left-truncates an oversized remaining turn and reports how many earlier tokens were omitted.

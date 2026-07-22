@@ -1,0 +1,206 @@
+{
+  "schemaVersion": 1,
+  "pipeline": {
+    "configPath": "config.json",
+    "externalTensorCount": 799,
+    "graphPath": "onnx/model_q4f16.onnx",
+    "initializerCount": 801,
+    "maxShardSizeBytes": 469762048,
+    "metadataPaths": [
+      "config.json",
+      "generation_config.json",
+      "tokenizer.json",
+      "tokenizer_config.json"
+    ],
+    "normalizedShardPaths": [
+      "onnx/model_q4f16.onnx_data",
+      "onnx/model_q4f16.onnx_data_1",
+      "onnx/model_q4f16.onnx_data_2",
+      "onnx/model_q4f16.onnx_data_3",
+      "onnx/model_q4f16.onnx_data_4"
+    ],
+    "onnxIrCommit": "32283c3dcae562b742adf119e943785ee12d1426",
+    "quantization": "q4f16",
+    "shardCount": 5,
+    "sourceShardCount": 2,
+    "topologicallySortGraph": true
+  },
+  "models": [
+    {
+      "id": "tiny-aya-global",
+      "source": {
+        "files": [
+          {
+            "path": "config.json",
+            "sha256": "3da94717f60de9b404cca64311a3f0d50c6847974c5d7b61b178cc32f32cb621",
+            "sizeBytes": 2318
+          },
+          {
+            "path": "generation_config.json",
+            "sha256": "3a9136deba1bd98df479931c7dd92c141684994e65bfdfa97d9ddc7d9cab1319",
+            "sizeBytes": 136
+          },
+          {
+            "path": "onnx/model_q4f16.onnx",
+            "sha256": "0fd23a22d297e492b29cb58c2011374c6851fd2afdadd0d151859721b4faffa7",
+            "sizeBytes": 362391
+          },
+          {
+            "path": "onnx/model_q4f16.onnx_data",
+            "sha256": "136c11c8985b57f58e4565b90b0aa63ab209cd250e1769a8c28f2781f550b1c4",
+            "sizeBytes": 2064531456
+          },
+          {
+            "path": "onnx/model_q4f16.onnx_data_1",
+            "sha256": "987f114e76909c265ee4ac80382bf2a6d508fbe99c892b030ac9c2a077b53373",
+            "sizeBytes": 268435456
+          },
+          {
+            "path": "tokenizer.json",
+            "sha256": "0b0eea0844526f017ce46eed1de63cbf754145115b716193a74263bb3c93c9e3",
+            "sizeBytes": 21077804
+          },
+          {
+            "path": "tokenizer_config.json",
+            "sha256": "94f0ef9258bbdb7c0b731e71036af816718c22a1a4f190a83b5028ebae4e040d",
+            "sizeBytes": 3846
+          }
+        ],
+        "repo": "onnx-community/tiny-aya-global-ONNX",
+        "revision": "7fff1be9627e40f0d89c33f406882bdafb56ec90"
+      }
+    },
+    {
+      "id": "tiny-aya-earth",
+      "source": {
+        "files": [
+          {
+            "path": "config.json",
+            "sha256": "d85da832ee269666e8c57e19f620f77cee34bb449cb6d8bcce7dfd3bd921adb0",
+            "sizeBytes": 2313
+          },
+          {
+            "path": "generation_config.json",
+            "sha256": "b4886e47fa2a2b0ef6f17019655625e0acb86b60536d08e62da007dc6326164d",
+            "sizeBytes": 131
+          },
+          {
+            "path": "onnx/model_q4f16.onnx",
+            "sha256": "0fd23a22d297e492b29cb58c2011374c6851fd2afdadd0d151859721b4faffa7",
+            "sizeBytes": 362391
+          },
+          {
+            "path": "onnx/model_q4f16.onnx_data",
+            "sha256": "06934e8fe4b1cb3652c26cb75b4adddf51e5bfca3db236c37a73d5633c74104f",
+            "sizeBytes": 2064531456
+          },
+          {
+            "path": "onnx/model_q4f16.onnx_data_1",
+            "sha256": "7878d7ba2d83c1f9a2439deadc5b36a54de3b1c0a403a44847ac8aa9a1097a9e",
+            "sizeBytes": 268435456
+          },
+          {
+            "path": "tokenizer.json",
+            "sha256": "0b0eea0844526f017ce46eed1de63cbf754145115b716193a74263bb3c93c9e3",
+            "sizeBytes": 21077804
+          },
+          {
+            "path": "tokenizer_config.json",
+            "sha256": "94f0ef9258bbdb7c0b731e71036af816718c22a1a4f190a83b5028ebae4e040d",
+            "sizeBytes": 3846
+          }
+        ],
+        "repo": "onnx-community/tiny-aya-earth-ONNX",
+        "revision": "24a24ee8b8483762575fe734e57bad21ca36d8c6"
+      }
+    },
+    {
+      "id": "tiny-aya-fire",
+      "source": {
+        "files": [
+          {
+            "path": "config.json",
+            "sha256": "d85da832ee269666e8c57e19f620f77cee34bb449cb6d8bcce7dfd3bd921adb0",
+            "sizeBytes": 2313
+          },
+          {
+            "path": "generation_config.json",
+            "sha256": "b4886e47fa2a2b0ef6f17019655625e0acb86b60536d08e62da007dc6326164d",
+            "sizeBytes": 131
+          },
+          {
+            "path": "onnx/model_q4f16.onnx",
+            "sha256": "0fd23a22d297e492b29cb58c2011374c6851fd2afdadd0d151859721b4faffa7",
+            "sizeBytes": 362391
+          },
+          {
+            "path": "onnx/model_q4f16.onnx_data",
+            "sha256": "9abe27c21a14864773a0d9a3314c513fb771f4468e84b921b0298bdf0b3e8087",
+            "sizeBytes": 2064531456
+          },
+          {
+            "path": "onnx/model_q4f16.onnx_data_1",
+            "sha256": "702c83998ccab013a93735759a9e2e8d1c3318a7c6fadb2a50a0418fb0d6726d",
+            "sizeBytes": 268435456
+          },
+          {
+            "path": "tokenizer.json",
+            "sha256": "0b0eea0844526f017ce46eed1de63cbf754145115b716193a74263bb3c93c9e3",
+            "sizeBytes": 21077804
+          },
+          {
+            "path": "tokenizer_config.json",
+            "sha256": "94f0ef9258bbdb7c0b731e71036af816718c22a1a4f190a83b5028ebae4e040d",
+            "sizeBytes": 3846
+          }
+        ],
+        "repo": "onnx-community/tiny-aya-fire-ONNX",
+        "revision": "70f6b7edf79955855d7939342d2a39ab644d3ed6"
+      }
+    },
+    {
+      "id": "tiny-aya-water",
+      "source": {
+        "files": [
+          {
+            "path": "config.json",
+            "sha256": "d85da832ee269666e8c57e19f620f77cee34bb449cb6d8bcce7dfd3bd921adb0",
+            "sizeBytes": 2313
+          },
+          {
+            "path": "generation_config.json",
+            "sha256": "b4886e47fa2a2b0ef6f17019655625e0acb86b60536d08e62da007dc6326164d",
+            "sizeBytes": 131
+          },
+          {
+            "path": "onnx/model_q4f16.onnx",
+            "sha256": "0fd23a22d297e492b29cb58c2011374c6851fd2afdadd0d151859721b4faffa7",
+            "sizeBytes": 362391
+          },
+          {
+            "path": "onnx/model_q4f16.onnx_data",
+            "sha256": "a6bb9723276b6c7f0fa17532f0d1b5bd5595092444a30ff84ed3797bb62b7fba",
+            "sizeBytes": 2064531456
+          },
+          {
+            "path": "onnx/model_q4f16.onnx_data_1",
+            "sha256": "6c832d12d54831dd35df6f566fd200c6ec40965063bac54a9122b8c0b0d18943",
+            "sizeBytes": 268435456
+          },
+          {
+            "path": "tokenizer.json",
+            "sha256": "0b0eea0844526f017ce46eed1de63cbf754145115b716193a74263bb3c93c9e3",
+            "sizeBytes": 21077804
+          },
+          {
+            "path": "tokenizer_config.json",
+            "sha256": "94f0ef9258bbdb7c0b731e71036af816718c22a1a4f190a83b5028ebae4e040d",
+            "sizeBytes": 3846
+          }
+        ],
+        "repo": "onnx-community/tiny-aya-water-ONNX",
+        "revision": "e1109b664b476b709d13bf40dc105efb147caa09"
+      }
+    }
+  ]
+}
